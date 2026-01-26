@@ -30,6 +30,9 @@ impl GpuArch {
     }
 
     /// Parse from string like "90", "90a", "100a", "sm_90a"
+    ///
+    /// If no suffix is provided (e.g., "90"), auto-suffix is applied for sm_90+.
+    /// To explicitly disable the suffix, use the numeric API directly.
     pub fn parse(s: &str) -> Result<Self> {
         let s = s.trim().to_lowercase();
 
@@ -37,7 +40,7 @@ impl GpuArch {
         let s = s.strip_prefix("sm_").unwrap_or(&s);
 
         // Check for suffix (letters at the end)
-        let (num_part, suffix) = if s.ends_with('a') {
+        let (num_part, explicit_suffix) = if s.ends_with('a') {
             (&s[..s.len() - 1], Some("a".to_string()))
         } else {
             (s.as_ref(), None)
@@ -54,7 +57,12 @@ impl GpuArch {
             base
         };
 
-        Ok(Self { base, suffix })
+        // If explicit suffix provided, use it; otherwise auto-suffix for >=90
+        if explicit_suffix.is_some() {
+            Ok(Self { base, suffix: explicit_suffix })
+        } else {
+            Ok(Self::auto_suffix(base))
+        }
     }
 
     /// Create GPU arch with auto-detected suffix for newer architectures
