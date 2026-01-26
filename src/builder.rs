@@ -142,6 +142,41 @@ impl KernelBuilder {
         self.compute_cap = ComputeCapability::new().with_default(cap);
     }
 
+    /// Require explicit compute capability (fail fast if not set)
+    ///
+    /// Use this for Docker builds or CI environments where nvidia-smi is unavailable.
+    /// The build will fail immediately if CUDA_COMPUTE_CAP is not set and no
+    /// compute capability was explicitly configured via `.compute_cap()`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use cudaforge::KernelBuilder;
+    ///
+    /// // For Docker builds, require explicit compute cap
+    /// KernelBuilder::new()
+    ///     .require_explicit_compute_cap()?  // Fails if CUDA_COMPUTE_CAP not set
+    ///     .source_dir("src/kernels")
+    ///     .build_lib("libkernels.a")?;
+    /// # Ok::<(), cudaforge::Error>(())
+    /// ```
+    pub fn require_explicit_compute_cap(self) -> Result<Self> {
+        // Check if compute cap is already set
+        if self.compute_cap.get_default().is_ok() {
+            return Ok(self);
+        }
+
+        // Check environment variable
+        if std::env::var("CUDA_COMPUTE_CAP").is_ok() {
+            return Ok(self);
+        }
+
+        Err(Error::ComputeCapDetectionFailed(
+            "Explicit compute capability required but not set. \
+            Either call .compute_cap(N) on the builder or set CUDA_COMPUTE_CAP environment variable. \
+            This is required for Docker builds where nvidia-smi is unavailable.".to_string()
+        ))
+    }
+
     // ========== External Dependencies ==========
 
     /// Add CUTLASS dependency

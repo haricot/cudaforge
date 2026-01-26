@@ -353,6 +353,55 @@ fn main() -> cudaforge::Result<()> {
 | `CUDAFORGE_THREADS` | Override thread count |
 | `NVCC_THREADS` | nvcc internal parallel threads |
 
+## Docker Builds
+
+> [!IMPORTANT]
+> **GPU is NOT accessible during `docker build`** — only during `docker run --gpus all`.
+
+When building CUDA kernels inside a Dockerfile, `nvidia-smi` cannot be used to auto-detect compute capability. You must explicitly set `CUDA_COMPUTE_CAP`:
+
+### Dockerfile Example
+
+```dockerfile
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+# Set compute capability for the build
+ARG CUDA_COMPUTE_CAP=90
+ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
+
+# Build with explicit compute cap
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+```
+
+Build for different GPU architectures:
+
+```bash
+# Build for Hopper (sm_90)
+docker build --build-arg CUDA_COMPUTE_CAP=90 -t myapp:hopper .
+
+# Build for Blackwell (sm_100)
+docker build --build-arg CUDA_COMPUTE_CAP=100 -t myapp:blackwell .
+
+# Build for Ampere (sm_80)
+docker build --build-arg CUDA_COMPUTE_CAP=80 -t myapp:ampere .
+```
+
+### Fail-Fast Mode
+
+For CI/Docker builds, use `require_explicit_compute_cap()` to fail immediately if compute capability is not set:
+
+```rust
+KernelBuilder::new()
+    .require_explicit_compute_cap()?  // Fails fast if CUDA_COMPUTE_CAP not set
+    .source_dir("src/kernels")
+    .build_lib("libkernels.a")?;
+```
+
 ## Migration from bindgen_cuda
 
 | Old API | New API |

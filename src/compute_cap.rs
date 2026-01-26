@@ -219,11 +219,14 @@ fn detect_from_nvidia_smi() -> Result<GpuArch> {
             parse_nvidia_smi_output(&stdout)
         }
         Ok(output) => Err(Error::ComputeCapDetectionFailed(format!(
-            "nvidia-smi failed: {}",
+            "nvidia-smi failed: {}. \
+            If building in Docker, set CUDA_COMPUTE_CAP environment variable (e.g., CUDA_COMPUTE_CAP=90).",
             String::from_utf8_lossy(&output.stderr)
         ))),
         Err(e) => Err(Error::ComputeCapDetectionFailed(format!(
-            "Failed to run nvidia-smi: {}. Set CUDA_COMPUTE_CAP environment variable instead.",
+            "Failed to run nvidia-smi: {}. \
+            If building in Docker, set CUDA_COMPUTE_CAP environment variable (e.g., CUDA_COMPUTE_CAP=90). \
+            GPU is not accessible during 'docker build' - only during 'docker run --gpus all'.",
             e
         ))),
     }
