@@ -46,20 +46,29 @@ impl ExternalDependency {
         }
     }
 
-    /// Fetch the dependency to the specified output directory
+    /// Fetch the dependency to a global cache directory
     ///
-    /// Uses sparse checkout to only fetch include directories
+    /// Uses sparse checkout to only fetch include directories.
+    /// Caches dependencies at `~/.cudaforge/git/checkouts/{name}-{commit_prefix}/`
+    /// to avoid re-cloning on subsequent builds.
     pub fn fetch(&self, out_dir: &PathBuf) -> Result<PathBuf> {
-        std::fs::create_dir_all(out_dir).map_err(|e| {
-            Error::GitOperationFailed(format!("Failed to create output dir: {}", e))
-        })?;
+        // Use global cache directory, with out_dir as fallback
+        let cache_dir = cudaforge_git_cache_dir(out_dir)?;
 
-        let dep_dir = out_dir.join(&self.name);
+        // Generate cache key: {name}-{commit_prefix}
+        let commit_prefix = &self.commit[..16.min(self.commit.len())];
+        let cache_key = format!("{}-{}", self.name, commit_prefix);
+        let dep_dir = cache_dir.join(&cache_key);
 
         // Check if already at correct commit
         if dep_dir.join("include").exists() {
             if let Ok(current_commit) = self.get_current_commit(&dep_dir) {
                 if current_commit == self.commit {
+                    println!(
+                        "cargo:warning=Using cached {} at {}",
+                        self.name,
+                        dep_dir.display()
+                    );
                     return Ok(dep_dir);
                 }
             }
@@ -75,6 +84,12 @@ impl ExternalDependency {
 
         // Fetch and checkout specific commit
         self.checkout_commit(&dep_dir)?;
+
+        println!(
+            "cargo:warning=Cached {} at {}",
+            self.name,
+            dep_dir.display()
+        );
 
         Ok(dep_dir)
     }
@@ -303,6 +318,42 @@ pub fn resolve_cutlass_from_cargo_checkouts() -> Option<PathBuf> {
     }
 
     None
+}
+
+/// Get the global cache directory for cudaforge git checkouts
+///
+/// Priority:
+/// 1. `$CUDAFORGE_HOME/git/checkouts/` if CUDAFORGE_HOME is set
+/// 2. `~/.cudaforge/git/checkouts/` if HOME is set
+/// 3. `~/.cargo/git/checkouts/` as fallback (reuses Cargo's cache)
+///
+/// Creates the directory if it doesn't exist.
+fn cudaforge_git_cache_dir(fallback_dir: &PathBuf) -> Result<PathBuf> {
+    let cache_dir = if let Ok(cudaforge_home) = std::env::var("CUDAFORGE_HOME") {
+        PathBuf::from(cudaforge_home).join("git").join("checkouts")
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home)
+            .join(".cudaforge")
+            .join("git")
+            .join("checkouts")
+    } else if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
+        // Fallback to Cargo's cache directory
+        PathBuf::from(cargo_home).join("git").join("checkouts")
+    } else {
+        // Last resort: use the provided output directory
+        fallback_dir.join("git_cache")
+    };
+
+    // Ensure the cache directory exists
+    std::fs::create_dir_all(&cache_dir).map_err(|e| {
+        Error::GitOperationFailed(format!(
+            "Failed to create cache dir {}: {}",
+            cache_dir.display(),
+            e
+        ))
+    })?;
+
+    Ok(cache_dir)
 }
 
 fn cargo_git_checkouts_dir() -> Result<PathBuf> {

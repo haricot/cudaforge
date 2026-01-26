@@ -59,7 +59,10 @@ impl GpuArch {
 
         // If explicit suffix provided, use it; otherwise auto-suffix for >=90
         if explicit_suffix.is_some() {
-            Ok(Self { base, suffix: explicit_suffix })
+            Ok(Self {
+                base,
+                suffix: explicit_suffix,
+            })
         } else {
             Ok(Self::auto_suffix(base))
         }
