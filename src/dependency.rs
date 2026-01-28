@@ -1,6 +1,8 @@
 //! External dependency management (CUTLASS, custom git repos)
 
 use crate::error::{Error, Result};
+use fs2::FileExt;
+use std::fs::File;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -51,6 +53,8 @@ impl ExternalDependency {
     /// Uses sparse checkout to only fetch include directories.
     /// Caches dependencies at `~/.cudaforge/git/checkouts/{name}-{commit_prefix}/`
     /// to avoid re-cloning on subsequent builds.
+    ///
+    /// Uses file locking to prevent concurrent builds from conflicting.
     pub fn fetch(&self, out_dir: &PathBuf) -> Result<PathBuf> {
         // Use global cache directory, with out_dir as fallback
         let cache_dir = cudaforge_git_cache_dir(out_dir)?;
@@ -60,30 +64,52 @@ impl ExternalDependency {
         let cache_key = format!("{}-{}", self.name, commit_prefix);
         let dep_dir = cache_dir.join(&cache_key);
 
+        // Create a lock file for this specific dependency
+        let lock_path = cache_dir.join(format!("{}.lock", cache_key));
+        let lock_file = File::create(&lock_path).map_err(|e| {
+            Error::GitOperationFailed(format!("Failed to create lock file: {}", e))
+        })?;
+
+        // Acquire exclusive lock - this will block if another process holds the lock
+        lock_file.lock_exclusive().map_err(|e| {
+            Error::GitOperationFailed(format!("Failed to acquire lock: {}", e))
+        })?;
+
+        // Now we have exclusive access - check if already at correct commit
+        let result = self.fetch_with_lock(&dep_dir);
+
+        // Release lock (automatically happens when lock_file is dropped, but be explicit)
+        let _ = lock_file.unlock();
+
+        result
+    }
+
+    /// Internal fetch logic, called while holding the lock
+    fn fetch_with_lock(&self, dep_dir: &PathBuf) -> Result<PathBuf> {
         // Check if already at correct commit
         if dep_dir.join("include").exists() {
-            if let Ok(current_commit) = self.get_current_commit(&dep_dir) {
+            if let Ok(current_commit) = self.get_current_commit(dep_dir) {
                 if current_commit == self.commit {
                     println!(
                         "cargo:warning=Using cached {} at {}",
                         self.name,
                         dep_dir.display()
                     );
-                    return Ok(dep_dir);
+                    return Ok(dep_dir.clone());
                 }
             }
         }
 
         // Clone if not exists
         if !dep_dir.exists() {
-            self.clone_repo(&dep_dir)?;
+            self.clone_repo(dep_dir)?;
         }
 
         // Setup sparse checkout
-        self.setup_sparse_checkout(&dep_dir)?;
+        self.setup_sparse_checkout(dep_dir)?;
 
         // Fetch and checkout specific commit
-        self.checkout_commit(&dep_dir)?;
+        self.checkout_commit(dep_dir)?;
 
         println!(
             "cargo:warning=Cached {} at {}",
@@ -91,7 +117,7 @@ impl ExternalDependency {
             dep_dir.display()
         );
 
-        Ok(dep_dir)
+        Ok(dep_dir.clone())
     }
 
     /// Get include path arguments for nvcc
@@ -174,6 +200,9 @@ impl ExternalDependency {
     }
 
     fn checkout_commit(&self, dir: &PathBuf) -> Result<()> {
+        // Clean up any stale git lock files that may have been left by interrupted operations
+        self.cleanup_git_locks(dir);
+
         println!(
             "cargo:warning=Fetching {} commit {}",
             self.name, self.commit
@@ -208,6 +237,40 @@ impl ExternalDependency {
         }
 
         Ok(())
+    }
+
+    /// Clean up stale git lock files that may cause "index.lock exists" errors
+    ///
+    /// This can happen when:
+    /// - A previous git operation was interrupted
+    /// - Multiple parallel builds try to access the same cached repo
+    fn cleanup_git_locks(&self, dir: &PathBuf) {
+        let git_dir = dir.join(".git");
+        let lock_files = [
+            git_dir.join("index.lock"),
+            git_dir.join("HEAD.lock"),
+            git_dir.join("config.lock"),
+        ];
+
+        for lock_file in &lock_files {
+            if lock_file.exists() {
+                // Check if lock file is stale (older than 10 minutes)
+                if let Ok(metadata) = lock_file.metadata() {
+                    if let Ok(modified) = metadata.modified() {
+                        if let Ok(elapsed) = modified.elapsed() {
+                            // If lock file is older than 10 minutes, it's likely stale
+                            if elapsed.as_secs() > 600 {
+                                println!(
+                                    "cargo:warning=Removing stale git lock file: {}",
+                                    lock_file.display()
+                                );
+                                let _ = std::fs::remove_file(lock_file);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
