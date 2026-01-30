@@ -10,6 +10,7 @@ readme = "./README.md"
 license = "MIT OR Apache-2.0"
 keywords = ["cuda", "gpu", "nvcc", "kernel", "build"]
 categories = ["development-tools::build-utils", "compilers"]
+repository = "https://github.com/guoqingbao/cudaforge"
 
 [features]
 default = []
