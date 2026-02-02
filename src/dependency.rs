@@ -22,6 +22,8 @@ pub struct ExternalDependency {
     pub commit: String,
     /// Include paths within the repo (relative to repo root)
     pub include_paths: Vec<String>,
+    /// Whether to allow git submodule recursion (false adds --no-recurse-submodules)
+    pub recurse_submodules: bool,
 }
 
 impl ExternalDependency {
@@ -35,16 +37,25 @@ impl ExternalDependency {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            recurse_submodules: true,
         }
     }
 
     /// Create a custom git dependency
-    pub fn git(name: &str, repo_url: &str, commit: &str, include_paths: Vec<&str>) -> Self {
+    /// If `recurse_submodules` is false, clone/fetch adds --no-recurse-submodules.
+    pub fn git(
+        name: &str,
+        repo_url: &str,
+        commit: &str,
+        include_paths: Vec<&str>,
+        recurse_submodules: bool,
+    ) -> Self {
         Self {
             name: name.to_string(),
             repo_url: repo_url.to_string(),
             commit: commit.to_string(),
             include_paths: include_paths.iter().map(|s| s.to_string()).collect(),
+            recurse_submodules,
         }
     }
 
@@ -66,14 +77,13 @@ impl ExternalDependency {
 
         // Create a lock file for this specific dependency
         let lock_path = cache_dir.join(format!("{}.lock", cache_key));
-        let lock_file = File::create(&lock_path).map_err(|e| {
-            Error::GitOperationFailed(format!("Failed to create lock file: {}", e))
-        })?;
+        let lock_file = File::create(&lock_path)
+            .map_err(|e| Error::GitOperationFailed(format!("Failed to create lock file: {}", e)))?;
 
         // Acquire exclusive lock - this will block if another process holds the lock
-        lock_file.lock_exclusive().map_err(|e| {
-            Error::GitOperationFailed(format!("Failed to acquire lock: {}", e))
-        })?;
+        lock_file
+            .lock_exclusive()
+            .map_err(|e| Error::GitOperationFailed(format!("Failed to acquire lock: {}", e)))?;
 
         // Now we have exclusive access - check if already at correct commit
         let result = self.fetch_with_lock(&dep_dir);
@@ -151,18 +161,18 @@ impl ExternalDependency {
     fn clone_repo(&self, target_dir: &PathBuf) -> Result<()> {
         println!("cargo:warning=Cloning {} from {}", self.name, self.repo_url);
 
-        let status = Command::new("git")
-            .args([
-                "clone",
-                "--depth",
-                "1",
-                "--filter=blob:none",
-                "--sparse",
-                &self.repo_url,
-                target_dir.to_str().ok_or_else(|| {
-                    Error::GitOperationFailed("Invalid path encoding".to_string())
-                })?,
-            ])
+        let target_dir_str = target_dir
+            .to_str()
+            .ok_or_else(|| Error::GitOperationFailed("Invalid path encoding".to_string()))?;
+
+        let mut cmd = Command::new("git");
+        cmd.args(["clone", "--depth", "1", "--filter=blob:none", "--sparse"]);
+        if !self.recurse_submodules {
+            cmd.arg("--no-recurse-submodules");
+        }
+        let status = cmd
+            .arg(&self.repo_url)
+            .arg(target_dir_str)
             .status()
             .map_err(|e| Error::GitOperationFailed(format!("git clone failed: {}", e)))?;
 
@@ -209,8 +219,13 @@ impl ExternalDependency {
         );
 
         // Fetch the specific commit
-        let status = Command::new("git")
-            .args(["fetch", "origin", &self.commit])
+        let mut cmd = Command::new("git");
+        cmd.arg("fetch");
+        if !self.recurse_submodules {
+            cmd.arg("--no-recurse-submodules");
+        }
+        let status = cmd
+            .args(["origin", &self.commit])
             .current_dir(dir)
             .status()
             .map_err(|e| Error::GitOperationFailed(format!("git fetch failed: {}", e)))?;
@@ -294,15 +309,22 @@ impl DependencyManager {
     }
 
     /// Add a custom git dependency
+    /// If `recurse_submodules` is false, clone/fetch adds --no-recurse-submodules.
     pub fn with_git_dependency(
         mut self,
         name: &str,
         repo: &str,
         commit: &str,
         include_paths: Vec<&str>,
+        recurse_submodules: bool,
     ) -> Self {
-        self.dependencies
-            .push(ExternalDependency::git(name, repo, commit, include_paths));
+        self.dependencies.push(ExternalDependency::git(
+            name,
+            repo,
+            commit,
+            include_paths,
+            recurse_submodules,
+        ));
         self
     }
 

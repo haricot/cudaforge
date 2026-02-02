@@ -181,6 +181,7 @@ KernelBuilder::new()
         "https://github.com/org/my_lib.git",   // Repository
         "abc123def456",                        // Commit hash
         vec!["include", "src/include"],        // Include paths
+        false,                                 // Do not recurse submodules
     )
     .build_lib("libkernels.a")?;
 ```

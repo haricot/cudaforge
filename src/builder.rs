@@ -186,16 +186,22 @@ impl KernelBuilder {
     }
 
     /// Add a custom git dependency
+    /// If `recurse_submodules` is false, clone/fetch adds --no-recurse-submodules.
     pub fn with_git_dependency(
         mut self,
         name: &str,
         repo: &str,
         commit: &str,
         include_paths: Vec<&str>,
+        recurse_submodules: bool,
     ) -> Self {
-        self.dependencies =
-            self.dependencies
-                .with_git_dependency(name, repo, commit, include_paths);
+        self.dependencies = self.dependencies.with_git_dependency(
+            name,
+            repo,
+            commit,
+            include_paths,
+            recurse_submodules,
+        );
         self
     }
 
