@@ -87,6 +87,18 @@ impl GpuArch {
         }
     }
 
+    /// Get the nvcc -gencode argument (e.g., "-gencode=arch=compute_90a,code=sm_90a")
+    ///
+    /// This format is preferred for fat binary support and explicit architecture targeting.
+    pub fn to_gencode_arg(&self) -> String {
+        let compute = match &self.suffix {
+            Some(s) => format!("compute_{}{}", self.base, s),
+            None => format!("compute_{}", self.base),
+        };
+        let sm = self.to_nvcc_arch();
+        format!("-gencode=arch={},code={}", compute, sm)
+    }
+
     /// Get the base compute capability number
     pub fn base(&self) -> usize {
         self.base
@@ -340,5 +352,36 @@ mod tests {
         assert_eq!(GpuArch::auto_suffix(89).to_nvcc_arch(), "sm_89");
         assert_eq!(GpuArch::auto_suffix(90).to_nvcc_arch(), "sm_90a");
         assert_eq!(GpuArch::auto_suffix(100).to_nvcc_arch(), "sm_100a");
+    }
+
+    #[test]
+    fn test_gpu_arch_gencode() {
+        // Pre-Hopper architectures (no suffix)
+        assert_eq!(
+            GpuArch::auto_suffix(75).to_gencode_arg(),
+            "-gencode=arch=compute_75,code=sm_75"
+        );
+        assert_eq!(
+            GpuArch::auto_suffix(80).to_gencode_arg(),
+            "-gencode=arch=compute_80,code=sm_80"
+        );
+        assert_eq!(
+            GpuArch::auto_suffix(89).to_gencode_arg(),
+            "-gencode=arch=compute_89,code=sm_89"
+        );
+
+        // Hopper+ architectures (with 'a' suffix)
+        assert_eq!(
+            GpuArch::auto_suffix(90).to_gencode_arg(),
+            "-gencode=arch=compute_90a,code=sm_90a"
+        );
+        assert_eq!(
+            GpuArch::auto_suffix(100).to_gencode_arg(),
+            "-gencode=arch=compute_100a,code=sm_100a"
+        );
+        assert_eq!(
+            GpuArch::auto_suffix(120).to_gencode_arg(),
+            "-gencode=arch=compute_120a,code=sm_120a"
+        );
     }
 }

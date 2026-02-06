@@ -376,11 +376,11 @@ impl KernelBuilder {
                     return Ok(());
                 }
 
-                let nvcc_arch = gpu_arch.to_nvcc_arch();
+                let gencode_arg = gpu_arch.to_gencode_arg();
 
                 let mut command = Command::new(&toolkit.nvcc_path);
                 command
-                    .arg(format!("--gpu-architecture={}", nvcc_arch))
+                    .arg(&gencode_arg)
                     .arg("-c")
                     .arg("-o")
                     .arg(obj_file)
@@ -522,7 +522,6 @@ impl KernelBuilder {
                     .and_then(|n| n.to_str())
                     .unwrap_or("");
                 let gpu_arch = self.compute_cap.get_for_file(filename)?;
-                let nvcc_arch = gpu_arch.to_nvcc_arch();
 
                 let output_file = self
                     .out_dir
@@ -543,9 +542,11 @@ impl KernelBuilder {
                     }
                 }
 
+                let gencode_arg = gpu_arch.to_gencode_arg();
+
                 let mut command = Command::new(&toolkit.nvcc_path);
                 command
-                    .arg(format!("--gpu-architecture={}", nvcc_arch))
+                    .arg(&gencode_arg)
                     .arg("--ptx")
                     .args(["--default-stream", "per-thread"])
                     .args(["--output-directory", &self.out_dir.to_string_lossy()]);
