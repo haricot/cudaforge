@@ -1,8 +1,8 @@
 //! Parallel build configuration
 
-use std::str::FromStr;
 use glob::Pattern;
 use std::path::Path;
+use std::str::FromStr;
 
 /// Parallel build configuration
 #[derive(Debug, Clone)]
@@ -15,6 +15,8 @@ pub struct ParallelConfig {
     min_threads: usize,
     /// Patterns for files that should use nvcc threads
     nvcc_thread_file_patterns: Vec<String>,
+    /// Number of threads for nvcc --threads argument (None = disabled)
+    num_nvcc_threads: Option<usize>,
 }
 
 impl Default for ParallelConfig {
@@ -24,6 +26,7 @@ impl Default for ParallelConfig {
             max_threads: None,
             min_threads: 1,
             nvcc_thread_file_patterns: vec!["flash_api".to_string(), "cutlass".to_string()],
+            num_nvcc_threads: Some(2),
         }
     }
 }
@@ -57,8 +60,18 @@ impl ParallelConfig {
     /// Set patterns for files that should use nvcc threads
     ///
     /// This replaces the default patterns ("flash_api", "cutlass").
-    pub fn with_nvcc_thread_patterns<S: AsRef<str>>(mut self, patterns: &[S]) -> Self {
+    /// `num_nvcc_threads` controls the `--threads=N` argument passed to nvcc.
+    pub fn with_nvcc_thread_patterns<S: AsRef<str>>(
+        mut self,
+        patterns: &[S],
+        num_nvcc_threads: usize,
+    ) -> Self {
         self.nvcc_thread_file_patterns = patterns.iter().map(|s| s.as_ref().to_string()).collect();
+        self.num_nvcc_threads = if num_nvcc_threads > 0 {
+            Some(num_nvcc_threads)
+        } else {
+            None
+        };
         self
     }
 
@@ -132,17 +145,7 @@ impl ParallelConfig {
 
     /// Get thread count for nvcc --threads argument
     pub fn nvcc_threads(&self) -> Option<usize> {
-        // Check NVCC_THREADS environment variable
-        if let Ok(val) = std::env::var("NVCC_THREADS") {
-            if let Ok(n) = val.parse::<usize>() {
-                if n > 0 {
-                    return Some(n);
-                }
-            }
-        }
-
-        // Default to 2 threads for nvcc internal parallelism
-        Some(2)
+        self.num_nvcc_threads
     }
 
     fn detect_available_threads(&self) -> usize {
@@ -186,7 +189,7 @@ mod tests {
         assert!(!config.should_use_nvcc_threads("simple.cu"));
 
         // Custom glob patterns
-        let config = ParallelConfig::new().with_nvcc_thread_patterns(&["gemm_*.cu", "special"]);
+        let config = ParallelConfig::new().with_nvcc_thread_patterns(&["gemm_*.cu", "special"], 4);
         assert!(config.should_use_nvcc_threads("gemm_fp16.cu"));
         assert!(config.should_use_nvcc_threads("src/gemm_int8.cu")); // glob matches full string? check glob usage
         assert!(config.should_use_nvcc_threads("special_kernel.cu")); // substring fallback
@@ -195,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_glob_vs_substring() {
-        let config = ParallelConfig::new().with_nvcc_thread_patterns(&["*gemm*.cu"]);
+        let config = ParallelConfig::new().with_nvcc_thread_patterns(&["*gemm*.cu"], 2);
         assert!(config.should_use_nvcc_threads("/path/to/my_gemm_kernel.cu"));
         assert!(!config.should_use_nvcc_threads("/path/to/other.cu"));
     }

@@ -224,7 +224,6 @@ KernelBuilder::new()
 
 - `CUDAFORGE_THREADS` - Override thread count
 - `RAYON_NUM_THREADS` - Alternative for compatibility
-- `NVCC_THREADS` - Number of threads for nvcc internal parallelism
 
 ### Pattern-Based Threading
 
@@ -236,7 +235,7 @@ KernelBuilder::new()
         "gemm_*.cu",       // Matches filename (gemm_vp8.cu)
         "**/special/*.cu", // Matches path
         "flash_api",       // Matches substring
-    ])
+    ], 4)  // Use 4 nvcc threads for matching files
     .build_lib("libkernels.a")?;
 ```
 
@@ -366,7 +365,6 @@ fn main() -> cudaforge::Result<()> {
 | `CUDA_HOME` | CUDA installation root |
 | `NVCC_CCBIN` | C++ compiler for nvcc |
 | `CUDAFORGE_THREADS` | Override thread count |
-| `NVCC_THREADS` | nvcc internal parallel threads |
 
 ## Docker Builds
 

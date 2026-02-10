@@ -228,8 +228,15 @@ impl KernelBuilder {
     /// Set patterns for files that should use nvcc threads
     ///
     /// This replaces the default patterns ("flash_api", "cutlass").
-    pub fn nvcc_thread_patterns<S: AsRef<str>>(mut self, patterns: &[S]) -> Self {
-        self.parallel = self.parallel.with_nvcc_thread_patterns(patterns);
+    /// `num_nvcc_threads` controls the `--threads=N` argument passed to nvcc for matching files.
+    pub fn nvcc_thread_patterns<S: AsRef<str>>(
+        mut self,
+        patterns: &[S],
+        num_nvcc_threads: usize,
+    ) -> Self {
+        self.parallel = self
+            .parallel
+            .with_nvcc_thread_patterns(patterns, num_nvcc_threads);
         self
     }
 
@@ -521,6 +528,7 @@ impl KernelBuilder {
 
         let dep_args = self.dependencies.fetch_all(&self.out_dir)?;
         let ccbin_env = std::env::var("NVCC_CCBIN").ok();
+        let nvcc_threads = self.parallel.nvcc_threads();
 
         kernel_files
             .par_iter()
@@ -569,6 +577,14 @@ impl KernelBuilder {
                     command
                         .arg("-allow-unsupported-compiler")
                         .args(["-ccbin", ccbin]);
+                }
+
+                // Add nvcc threads for certain files
+                if let Some(threads) = nvcc_threads {
+                    let file_path = kernel_file.to_string_lossy();
+                    if self.parallel.should_use_nvcc_threads(&file_path) {
+                        command.arg(format!("--threads={}", threads));
+                    }
                 }
 
                 command.arg(kernel_file);
