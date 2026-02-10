@@ -225,6 +225,14 @@ impl KernelBuilder {
         self
     }
 
+    /// Set patterns for files that should use nvcc threads
+    ///
+    /// This replaces the default patterns ("flash_api", "cutlass").
+    pub fn nvcc_thread_patterns<S: AsRef<str>>(mut self, patterns: &[S]) -> Self {
+        self.parallel = self.parallel.with_nvcc_thread_patterns(patterns);
+        self
+    }
+
     // ========== Build Configuration ==========
 
     /// Set the output directory
@@ -418,7 +426,7 @@ impl KernelBuilder {
                 // Add nvcc threads for certain files
                 if let Some(threads) = nvcc_threads {
                     let filename = kernel_file.to_string_lossy();
-                    if filename.contains("flash_api") || filename.contains("cutlass") {
+                    if self.parallel.should_use_nvcc_threads(&filename) {
                         command.arg(format!("--threads={}", threads));
                     }
                 }

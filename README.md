@@ -226,6 +226,20 @@ KernelBuilder::new()
 - `RAYON_NUM_THREADS` - Alternative for compatibility
 - `NVCC_THREADS` - Number of threads for nvcc internal parallelism
 
+### Pattern-Based Threading
+
+Enable multiple nvcc threads only for specific files (supports globs):
+
+```rust
+KernelBuilder::new()
+    .nvcc_thread_patterns(&[
+        "gemm_*.cu",       // Matches filename (gemm_vp8.cu)
+        "**/special/*.cu", // Matches path
+        "flash_api",       // Matches substring
+    ])
+    .build_lib("libkernels.a")?;
+```
+
 ## CUDA Toolkit Detection
 
 CudaForge automatically locates the CUDA toolkit in this order:

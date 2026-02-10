@@ -1,6 +1,8 @@
 //! Parallel build configuration
 
 use std::str::FromStr;
+use glob::Pattern;
+use std::path::Path;
 
 /// Parallel build configuration
 #[derive(Debug, Clone)]
@@ -11,6 +13,8 @@ pub struct ParallelConfig {
     max_threads: Option<usize>,
     /// Minimum threads (floor)
     min_threads: usize,
+    /// Patterns for files that should use nvcc threads
+    nvcc_thread_file_patterns: Vec<String>,
 }
 
 impl Default for ParallelConfig {
@@ -19,6 +23,7 @@ impl Default for ParallelConfig {
             thread_percentage: 0.5, // 50% by default
             max_threads: None,
             min_threads: 1,
+            nvcc_thread_file_patterns: vec!["flash_api".to_string(), "cutlass".to_string()],
         }
     }
 }
@@ -47,6 +52,46 @@ impl ParallelConfig {
     pub fn with_min_threads(mut self, min: usize) -> Self {
         self.min_threads = min.max(1);
         self
+    }
+
+    /// Set patterns for files that should use nvcc threads
+    ///
+    /// This replaces the default patterns ("flash_api", "cutlass").
+    pub fn with_nvcc_thread_patterns<S: AsRef<str>>(mut self, patterns: &[S]) -> Self {
+        self.nvcc_thread_file_patterns = patterns.iter().map(|s| s.as_ref().to_string()).collect();
+        self
+    }
+
+    /// Check if a file matches any of the thread patterns
+    ///
+    /// Supports glob patterns (e.g. "gemm_*.cu") and substring matching
+    /// Check if a file matches any of the thread patterns
+    ///
+    /// Supports glob patterns (e.g. "gemm_*.cu") and substring matching
+    pub fn should_use_nvcc_threads(&self, path_str: &str) -> bool {
+        let path = Path::new(path_str);
+        let filename_component = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+
+        self.nvcc_thread_file_patterns.iter().any(|pattern| {
+            // Check if it looks like a glob pattern
+            if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+                if let Ok(compiled) = Pattern::new(pattern) {
+                    // 1. Try matching against the filename component (if pattern has no path separators)
+                    if !pattern.contains('/') && !pattern.contains('\\') {
+                        if compiled.matches(filename_component) {
+                            return true;
+                        }
+                    }
+
+                    // 2. Try matching against the full path
+                    if compiled.matches(path_str) {
+                        return true;
+                    }
+                }
+            }
+            // Fallback to substring matching (preserve backward compatibility)
+            path_str.contains(pattern)
+        })
     }
 
     /// Calculate the number of threads to use
@@ -129,5 +174,29 @@ mod tests {
 
         let config = ParallelConfig::new().with_percentage(-0.5);
         assert_eq!(config.thread_percentage, 0.0);
+    }
+
+    #[test]
+    fn test_thread_patterns() {
+        let config = ParallelConfig::default();
+        // Default substring matching
+        assert!(config.should_use_nvcc_threads("flash_api.cu"));
+        assert!(config.should_use_nvcc_threads("src/flash_api_v2.cu"));
+        assert!(config.should_use_nvcc_threads("cutlass_gemm.cu"));
+        assert!(!config.should_use_nvcc_threads("simple.cu"));
+
+        // Custom glob patterns
+        let config = ParallelConfig::new().with_nvcc_thread_patterns(&["gemm_*.cu", "special"]);
+        assert!(config.should_use_nvcc_threads("gemm_fp16.cu"));
+        assert!(config.should_use_nvcc_threads("src/gemm_int8.cu")); // glob matches full string? check glob usage
+        assert!(config.should_use_nvcc_threads("special_kernel.cu")); // substring fallback
+        assert!(!config.should_use_nvcc_threads("flash_api.cu"));
+    }
+
+    #[test]
+    fn test_glob_vs_substring() {
+        let config = ParallelConfig::new().with_nvcc_thread_patterns(&["*gemm*.cu"]);
+        assert!(config.should_use_nvcc_threads("/path/to/my_gemm_kernel.cu"));
+        assert!(!config.should_use_nvcc_threads("/path/to/other.cu"));
     }
 }
