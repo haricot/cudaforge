@@ -82,7 +82,11 @@
 
 #![deny(missing_docs)]
 
+#[cfg(feature = "heuristics")]
+mod arch_metrics;
 mod builder;
+#[cfg(feature = "capabilities")]
+mod capabilities;
 mod compute_cap;
 mod dependency;
 mod error;
@@ -92,14 +96,28 @@ mod source;
 mod toolkit;
 
 // Re-export main types
+#[cfg(feature = "heuristics")]
+pub use arch_metrics::{
+    fp8_to_fp32_ratio, int8_to_fp32_ratio, max_tile_elements, roofline_intensity,
+    roofline_intensity_fp8, roofline_intensity_int8, tensor_core_dominance,
+    theoretical_occupancy_limit, to_c_defines, ArchObservables, DataSource, DerivedProperties,
+    Measured, ModelType,
+};
 pub use builder::{KernelBuilder, PtxOutput};
+#[cfg(feature = "capabilities")]
+pub use capabilities::{
+    emit_check_cfgs, emit_detailed_feature_summary, emit_rustc_cfgs, emit_toolkit_cfgs,
+    evaluate_hw_capabilities, evaluate_toolkit_capabilities, get_capabilities_results,
+    get_toolkit_capabilities_results, print_summary_once, Capability, ToolkitCapability,
+    CAPABILITIES, TOOLKIT_CAPABILITIES,
+};
 pub use compute_cap::{detect_compute_cap, get_gpu_arch_string, ComputeCapability, GpuArch};
 pub use dependency::{resolve_cutlass_from_cargo_checkouts, DependencyManager, ExternalDependency};
 pub use error::{Error, Result};
 pub use hash::BuildCache;
 pub use parallel::ParallelConfig;
 pub use source::{collect_headers, SourceSelector};
-pub use toolkit::CudaToolkit;
+pub use toolkit::{CudaToolkit, CudaVersion};
 
 /// Convenience alias for the main builder type
 pub type Builder = KernelBuilder;

@@ -142,6 +142,35 @@ impl KernelBuilder {
         self.compute_cap = ComputeCapability::new().with_default(cap);
     }
 
+    /// Register hardware capabilities into the builder arguments and emit cargo:rustc-cfg directives.
+    ///
+    /// This will automatically inject macros like `-DHAS_WMMA=1` based on the internal compute capability.
+    #[cfg(feature = "capabilities")]
+    pub fn register_capabilities(mut self) -> Self {
+        if let Ok(arch) = self.compute_cap.get_default() {
+            for (name, enabled) in crate::capabilities::get_capabilities_results(&arch) {
+                if enabled {
+                    self.extra_args.push(format!("-D{}=1", name.to_uppercase()));
+                }
+            }
+        }
+        self
+    }
+
+    /// Prints a hardware capability summary to the console once per build.
+    #[cfg(feature = "capabilities")]
+    pub fn print_capabilities_once(self) -> Self {
+        if let Ok(arch) = self.compute_cap.get_default() {
+            let toolkit_version = self
+                .toolkit
+                .as_ref()
+                .and_then(|t| t.parsed_version.clone())
+                .or_else(|| CudaToolkit::detect().ok().and_then(|t| t.parsed_version));
+            crate::capabilities::print_summary_once(&arch, toolkit_version.as_ref());
+        }
+        self
+    }
+
     /// Require explicit compute capability (fail fast if not set)
     ///
     /// Use this for Docker builds or CI environments where nvidia-smi is unavailable.
@@ -366,12 +395,15 @@ impl KernelBuilder {
         }
 
         if compile_jobs.is_empty() && out_file.exists() {
-            println!("cargo:warning=All kernels up-to-date, skipping compilation");
+            println!(
+                "cargo:warning=LIB: all {} kernel(s) up-to-date, skipping",
+                kernel_files.len()
+            );
             return Ok(());
         }
 
         println!(
-            "cargo:warning=Compiling {} of {} kernels",
+            "cargo:warning=LIB: compiling {} of {} kernels",
             compile_jobs.len(),
             kernel_files.len()
         );
@@ -530,6 +562,9 @@ impl KernelBuilder {
         let ccbin_env = std::env::var("NVCC_CCBIN").ok();
         let nvcc_threads = self.parallel.nvcc_threads();
 
+        let compiled_count = std::sync::atomic::AtomicUsize::new(0);
+        let skipped_count = std::sync::atomic::AtomicUsize::new(0);
+
         kernel_files
             .par_iter()
             .try_for_each(|kernel_file| -> Result<()> {
@@ -552,11 +587,15 @@ impl KernelBuilder {
                             (out_meta.modified(), in_meta.modified())
                         {
                             if out_time.duration_since(in_time).is_ok() {
+                                skipped_count.fetch_add(1, Ordering::Relaxed);
                                 return Ok(());
                             }
                         }
                     }
                 }
+
+                println!("cargo:warning=PTX compiling: {}", filename);
+                compiled_count.fetch_add(1, Ordering::Relaxed);
 
                 let gencode_arg = gpu_arch.to_gencode_arg();
 
@@ -611,6 +650,17 @@ impl KernelBuilder {
 
                 Ok(())
             })?;
+
+        let compiled = compiled_count.load(Ordering::Relaxed);
+        let skipped = skipped_count.load(Ordering::Relaxed);
+        if compiled > 0 {
+            println!(
+                "cargo:warning=PTX: compiled {} kernel(s), {} up-to-date",
+                compiled, skipped
+            );
+        } else {
+            println!("cargo:warning=PTX: all {} kernel(s) up-to-date", skipped);
+        }
 
         Ok(PtxOutput {
             paths: kernel_files,

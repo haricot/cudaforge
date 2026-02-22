@@ -15,6 +15,13 @@ repository = "https://github.com/guoqingbao/cudaforge"
 [features]
 default = []
 ci-check = []
+capabilities = []
+heuristics = ["capabilities"]
+
+[[bin]]
+name = "cudaforge-inspect"
+path = "src/bin/cudaforge-inspect.rs"
+required-features = ["capabilities"]
 
 [dependencies]
 glob = "0.3.1"
@@ -28,3 +35,5 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 fs2 = "0.4"
+
+[workspace]

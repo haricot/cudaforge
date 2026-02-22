@@ -14,6 +14,63 @@ const CUDA_SEARCH_PATHS: &[&str] = &[
     "C:/CUDA",
 ];
 
+/// Parsed CUDA toolkit version for capability checks
+///
+/// Enables compile-time gating of features that depend on the CUDA toolkit
+/// version rather than (or in addition to) the GPU compute capability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CudaVersion {
+    /// Major version (e.g. 12 for CUDA 12.6)
+    pub major: u32,
+    /// Minor version (e.g. 6 for CUDA 12.6)
+    pub minor: u32,
+}
+
+impl CudaVersion {
+    /// Create a new CUDA version
+    pub fn new(major: u32, minor: u32) -> Self {
+        Self { major, minor }
+    }
+
+    /// Parse from a version string like "12.1", "11.8", "12"
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+        let mut parts = s.split('.');
+        let major = parts.next()?.parse::<u32>().ok()?;
+        let minor = parts
+            .next()
+            .and_then(|m| m.parse::<u32>().ok())
+            .unwrap_or(0);
+        Some(Self { major, minor })
+    }
+
+    /// Check if this version is at least (major, minor)
+    pub fn at_least(&self, major: u32, minor: u32) -> bool {
+        (self.major, self.minor) >= (major, minor)
+    }
+}
+
+impl PartialOrd for CudaVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CudaVersion {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.major, self.minor).cmp(&(other.major, other.minor))
+    }
+}
+
+impl std::fmt::Display for CudaVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.major, self.minor)
+    }
+}
+
 /// CUDA toolkit information
 #[derive(Debug, Clone)]
 pub struct CudaToolkit {
@@ -23,8 +80,10 @@ pub struct CudaToolkit {
     pub include_dir: PathBuf,
     /// CUDA lib directory
     pub lib_dir: PathBuf,
-    /// CUDA version (if detected)
+    /// CUDA version string (if detected), e.g. "12.1"
     pub version: Option<String>,
+    /// Parsed CUDA version for capability checks
+    pub parsed_version: Option<CudaVersion>,
 }
 
 impl CudaToolkit {
@@ -52,12 +111,14 @@ impl CudaToolkit {
         };
 
         let version = detect_cuda_version(&nvcc_path);
+        let parsed_version = version.as_deref().and_then(CudaVersion::parse);
 
         Ok(Self {
             nvcc_path,
             include_dir,
             lib_dir,
             version,
+            parsed_version,
         })
     }
 
@@ -80,12 +141,14 @@ impl CudaToolkit {
         };
 
         let version = detect_cuda_version(&nvcc_path);
+        let parsed_version = version.as_deref().and_then(CudaVersion::parse);
 
         Ok(Self {
             nvcc_path,
             include_dir,
             lib_dir,
             version,
+            parsed_version,
         })
     }
 
@@ -101,6 +164,16 @@ impl CudaToolkit {
         } else {
             Vec::new()
         }
+    }
+
+    /// Get the parsed CUDA version, or a sensible fallback
+    ///
+    /// If the version could not be detected, returns a conservative
+    /// CUDA 10.0 assumption (oldest version still commonly encountered).
+    pub fn cuda_version_or_default(&self) -> CudaVersion {
+        self.parsed_version
+            .clone()
+            .unwrap_or_else(|| CudaVersion::new(10, 0))
     }
 }
 
@@ -212,5 +285,47 @@ mod tests {
         let codes = parse_gpu_codes(output);
         assert!(codes.contains(&80));
         assert!(codes.contains(&90));
+    }
+
+    #[test]
+    fn test_cuda_version_parse() {
+        let v = CudaVersion::parse("12.1").unwrap();
+        assert_eq!(v.major, 12);
+        assert_eq!(v.minor, 1);
+
+        let v = CudaVersion::parse("11.8").unwrap();
+        assert_eq!(v.major, 11);
+        assert_eq!(v.minor, 8);
+
+        let v = CudaVersion::parse("12").unwrap();
+        assert_eq!(v.major, 12);
+        assert_eq!(v.minor, 0);
+
+        assert!(CudaVersion::parse("").is_none());
+        assert!(CudaVersion::parse("abc").is_none());
+    }
+
+    #[test]
+    fn test_cuda_version_at_least() {
+        let v = CudaVersion::new(12, 1);
+        assert!(v.at_least(12, 0));
+        assert!(v.at_least(12, 1));
+        assert!(!v.at_least(12, 2));
+        assert!(v.at_least(11, 8));
+        assert!(!v.at_least(13, 0));
+    }
+
+    #[test]
+    fn test_cuda_version_ordering() {
+        assert!(CudaVersion::new(12, 1) > CudaVersion::new(11, 8));
+        assert!(CudaVersion::new(12, 1) > CudaVersion::new(12, 0));
+        assert!(CudaVersion::new(12, 1) == CudaVersion::new(12, 1));
+        assert!(CudaVersion::new(10, 0) < CudaVersion::new(11, 0));
+    }
+
+    #[test]
+    fn test_cuda_version_display() {
+        assert_eq!(format!("{}", CudaVersion::new(12, 6)), "12.6");
+        assert_eq!(format!("{}", CudaVersion::new(11, 0)), "11.0");
     }
 }

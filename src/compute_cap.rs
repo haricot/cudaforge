@@ -103,6 +103,25 @@ impl GpuArch {
     pub fn base(&self) -> usize {
         self.base
     }
+
+    /// Retrieve physical architectural observables for this compute capability.
+    #[cfg(feature = "heuristics")]
+    pub fn observables(&self) -> crate::arch_metrics::ArchObservables {
+        crate::arch_metrics::ArchObservables::from_compute_cap(self.base)
+    }
+
+    /// Retrieve derived performance properties computed from physical observables.
+    #[cfg(feature = "heuristics")]
+    pub fn derived(&self) -> crate::arch_metrics::DerivedProperties {
+        let obs = self.observables();
+        crate::arch_metrics::DerivedProperties::from_observables(&obs)
+    }
+
+    /// Generate C-preprocessor macros (`#define`) for JIT compilers like NVRTC.
+    #[cfg(feature = "heuristics")]
+    pub fn to_c_defines(&self) -> String {
+        crate::arch_metrics::to_c_defines(self)
+    }
 }
 
 impl std::fmt::Display for GpuArch {
