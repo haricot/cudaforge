@@ -142,11 +142,40 @@ impl KernelBuilder {
         self.compute_cap = ComputeCapability::new().with_default(cap);
     }
 
-    /// Register hardware capabilities into the builder arguments and emit cargo:rustc-cfg directives.
+    /// Register hardware capabilities as Rust `cfg` flags.
     ///
-    /// This will automatically inject macros like `-DHAS_WMMA=1` based on the internal compute capability.
+    /// For each capability in the registry, emits:
+    /// - `cargo::rustc-check-cfg=cfg(name)` (registers the flag with the compiler)
+    /// - `cargo:rustc-cfg=name` if enabled (available via `#[cfg(name)]`)
+    ///
+    /// Does **not** inject `-D` flags into the builder. Chain with [`.emit_defines()`](Self::emit_defines)
+    /// to also pass flags to nvcc for C++ code.
     #[cfg(feature = "capabilities")]
-    pub fn register_capabilities(mut self) -> Self {
+    pub fn register_capabilities(self) -> Self {
+        if let Ok(arch) = self.compute_cap.get_default() {
+            for (name, enabled) in crate::capabilities::get_capabilities_results(&arch) {
+                println!("cargo::rustc-check-cfg=cfg({})", name);
+                if enabled {
+                    println!("cargo:rustc-cfg={}", name);
+                }
+            }
+        }
+        self
+    }
+
+    /// Inject hardware capability flags as C++ preprocessor macros (`-DNAME=1`) into the builder.
+    ///
+    /// For each **enabled** capability, adds `-DNAME=1` to the nvcc args, so `.cu` files can use
+    /// `#ifdef HAS_WGMMA` etc.
+    ///
+    /// Typically chained after [`.register_capabilities()`](Self::register_capabilities):
+    /// ```rust,ignore
+    /// KernelBuilder::new()
+    ///     .register_capabilities()  // Rust cfg
+    ///     .emit_defines()           // C++ -D flags
+    /// ```
+    #[cfg(feature = "capabilities")]
+    pub fn emit_defines(mut self) -> Self {
         if let Ok(arch) = self.compute_cap.get_default() {
             for (name, enabled) in crate::capabilities::get_capabilities_results(&arch) {
                 if enabled {

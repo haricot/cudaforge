@@ -111,6 +111,8 @@ pub use capabilities::{
     get_toolkit_capabilities_results, print_summary_once, Capability, ToolkitCapability,
     CAPABILITIES, TOOLKIT_CAPABILITIES,
 };
+#[cfg(feature = "heuristics")]
+pub use capabilities::write_heuristics_rs;
 pub use compute_cap::{detect_compute_cap, get_gpu_arch_string, ComputeCapability, GpuArch};
 pub use dependency::{resolve_cutlass_from_cargo_checkouts, DependencyManager, ExternalDependency};
 pub use error::{Error, Result};

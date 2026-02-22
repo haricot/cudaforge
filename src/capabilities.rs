@@ -5,6 +5,51 @@
 //! - [`TOOLKIT_CAPABILITIES`]: Runtime/toolkit capabilities gated on CUDA toolkit version
 //!   (and optionally compute capability)
 
+/// Synchronize a capability flag between Rust (`cargo:rustc-cfg`) and
+/// a [`KernelBuilder`](crate::KernelBuilder) (`-DNAME=1` for nvcc).
+///
+/// When `$value` is true:
+///   - Emits `cargo:rustc-cfg=$name` (available via `#[cfg($name)]`)
+///   - Adds `-D$NAME=1` to the builder (available via `#ifdef $NAME` in `.cu` files)
+///
+/// When `$value` is false:
+///   - Does nothing (flag is absent in both Rust and C++)
+///
+/// # Example
+/// ```rust,ignore
+/// let mut builder = cudaforge::KernelBuilder::new();
+/// let arch = cudaforge::detect_compute_cap()?;
+/// cudaforge::set_cfg!(builder, "has_wgmma", arch.base >= 90);
+/// ```
+#[macro_export]
+macro_rules! set_cfg {
+    ($builder:expr, $name:expr, $value:expr) => {
+        println!("cargo::rustc-check-cfg=cfg({})", $name);
+        if $value {
+            println!("cargo:rustc-cfg={}", $name);
+            $builder = $builder.arg(&format!("-D{}=1", $name.to_uppercase()));
+        }
+    };
+}
+
+/// Apply the same capability flag to two [`KernelBuilder`](crate::KernelBuilder)s simultaneously.
+///
+/// Useful when building separate static libraries (e.g., one for attention kernels,
+/// one for quantization kernels) that both need the same hardware flags.
+///
+/// # Example
+/// ```rust,ignore
+/// let mut b_attn = cudaforge::KernelBuilder::new().source_dir("src/attn");
+/// let mut b_quant = cudaforge::KernelBuilder::new().source_dir("src/quant");
+/// cudaforge::dual_set!(b_attn, b_quant, "has_wgmma", arch.base >= 90);
+/// ```
+#[macro_export]
+macro_rules! dual_set {
+    ($b1:expr, $b2:expr, $name:expr, $value:expr) => {
+        $crate::set_cfg!($b1, $name, $value);
+        $crate::set_cfg!($b2, $name, $value);
+    };
+}
 /// Represents a specific hardware capability for a CUDA architecture version
 #[derive(Debug, Clone)]
 pub struct Capability {
@@ -581,8 +626,38 @@ pub fn get_toolkit_capabilities_results(
     results
 }
 
+/// Write `cudaforge_heuristics.rs` to `OUT_DIR`.
+///
+/// The generated file contains a `pub const CUDAFORGE_NVRTC_MACROS: &str`
+/// with all C-preprocessor macros for the detected architecture.
+///
+/// Consumer usage in application code (not `build.rs`):
+/// ```rust,ignore
+/// include!(concat!(env!("OUT_DIR"), "/cudaforge_heuristics.rs"));
+///
+/// fn compile_kernel(kernel_source: &str) {
+///     let source = format!("{}\n{}", CUDAFORGE_NVRTC_MACROS, kernel_source);
+///     nvrtc_compile(&source); // 0ms detection overhead!
+/// }
+/// ```
+#[cfg(feature = "heuristics")]
+pub fn write_heuristics_rs(arch: &crate::compute_cap::GpuArch) -> std::io::Result<()> {
+    let out_dir = std::env::var("OUT_DIR")
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NotFound, e))?;
+    let defines = arch.to_c_defines();
+    let rs_file = std::path::Path::new(&out_dir).join("cudaforge_heuristics.rs");
+    let content = format!(
+        "/// Auto-generated NVRTC C-preprocessor macros for the detected GPU architecture.\n\
+         pub const CUDAFORGE_NVRTC_MACROS: &str = r#\"\n{}\"#;\n",
+        defines
+    );
+    std::fs::write(rs_file, content)
+}
+
 /// Prints a hardware feature summary on the terminal exactly once per build target.
-/// Also writes architectural heuristics to `OUT_DIR/cudaforge_heuristics.rs` if the `heuristics` feature is enabled.
+///
+/// To also generate `cudaforge_heuristics.rs` for JIT compilers, call
+/// [`write_heuristics_rs`] explicitly.
 pub fn print_summary_once(
     arch: &crate::compute_cap::GpuArch,
     toolkit_version: Option<&crate::toolkit::CudaVersion>,
@@ -605,19 +680,6 @@ pub fn print_summary_once(
                 toolkit_version,
                 tk_results.as_deref(),
             );
-
-            // Generate C defines as a Rust constant for downstream JIT compilers to include!
-            #[cfg(feature = "heuristics")]
-            {
-                let defines = arch.to_c_defines();
-                let rs_file = std::path::Path::new(&out_dir).join("cudaforge_heuristics.rs");
-                let content = format!(
-                    "/// Auto-generated NVRTC C-preprocessor macros for the detected GPU architecture.\n\
-                     pub const CUDAFORGE_NVRTC_MACROS: &str = r#\"\n{}\"#;\n",
-                    defines
-                );
-                let _ = std::fs::write(rs_file, content);
-            }
         }
     } else {
         emit_detailed_feature_summary(arch, &hw_results, toolkit_version, tk_results.as_deref());
