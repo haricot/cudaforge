@@ -191,6 +191,18 @@ pub struct ArchObservables {
 }
 
 impl ArchObservables {
+    /// Applies empirical scaling coefficients to the architectural metrics.
+    pub fn apply_coefficients(&mut self, flop_scale: f32, bw_scale: f32) {
+        self.fp32_flops_tflops.calibration_factor = Some(flop_scale);
+        self.tensor_core_flops_tflops.calibration_factor = Some(flop_scale);
+        self.fp8_flops_tflops.calibration_factor = Some(flop_scale);
+        self.int8_tops.calibration_factor = Some(flop_scale);
+        
+        self.dram_bandwidth_gbps.calibration_factor = Some(bw_scale);
+        self.l2_bandwidth_gbps.calibration_factor = Some(bw_scale);
+        self.shared_mem_bandwidth_gbps.calibration_factor = Some(bw_scale);
+    }
+
     /// Applies empirical measurements to calibrate the architecture model.
     ///
     /// This updates the `calibration_factor` of internal metrics based on the

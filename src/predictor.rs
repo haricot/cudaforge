@@ -369,6 +369,8 @@ pub struct KernelPrediction {
 pub struct PredictorReport {
     /// The architecture compute capability base (e.g., 80) used for this prediction.
     pub arch_base_cc: u32,
+    /// The specific GPU observables used for this prediction (including calibration).
+    pub observables: ArchObservables,
     // ── Phase 12 Execution Profile ──
     /// High-level summary of the architectural regime.
     pub execution_profile: ExecutionProfile,
@@ -817,9 +819,11 @@ impl<M: ProbabilisticModel> HardwarePredictor<M> {
         shape: ProblemShape,
         calibration: Option<CalibrationState>,
     ) -> Result<PredictorReport> {
-        let obs = ArchObservables::from_compute_cap(self.arch.base);
-        let derived = DerivedProperties::from_observables(&obs);
+        let mut obs = ArchObservables::from_compute_cap(self.arch.base);
         let calib = calibration.unwrap_or_default();
+        obs.apply_coefficients(calib.flop_scale_coeff, calib.bw_scale_coeff);
+        
+        let derived = DerivedProperties::from_observables(&obs);
 
         let sig = self.model.estimate(&self.arch, &obs, &derived, &shape, &calib);
         
@@ -978,6 +982,10 @@ impl PredictorReport {
         dtype: DType,
         calibration_state: Option<CalibrationState>,
     ) -> Self {
+        let mut obs = obs;
+        if let Some(state) = &calibration_state {
+            obs.apply_coefficients(state.flop_scale_coeff, state.bw_scale_coeff);
+        }
         let feasibility = resolve_feasibility(arch, dtype);
         let compute_dtype = feasibility.effective_compute_dtype;
 
@@ -1471,8 +1479,8 @@ impl PredictorReport {
         let suggested_search_space = derive_search_space(arch, &obs, &derived, &execution_profile);
 
         let shape_classification = classify_shape(&obs, &shape);
-        let state = calibration_state.unwrap_or_default();
-        let is_calibrated = state.samples_absorbed > 0;
+        let state = calibration_state.clone().unwrap_or_default();
+        let is_calibrated = calibration_state.is_some() && state.samples_absorbed > 0;
 
         let performance_signature = estimate_performance_signature(
             arch, 
@@ -1486,6 +1494,7 @@ impl PredictorReport {
 
         Self {
             arch_base_cc: arch.base as u32,
+            observables: obs,
             execution_profile,
             likelihood_distribution,
             regime_confidence,

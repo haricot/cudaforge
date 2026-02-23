@@ -304,6 +304,7 @@ fn print_capabilities(m: usize, n: usize, k: usize, dtype: cudaforge::DType, cal
         };
 
         println!("  \x1b[1;32m├─ Architectural Ratios & Limits ───────────────────────┤\x1b[0m");
+        let obs = &predictor.observables;
         println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Representative SKU for constants:", obs.reference_gpu);
         println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {} bytes", "Bytes per register file (per SM):", obs.registers_per_sm.value * 4);
         println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {} KB", "Shared Memory per SM:", obs.shared_mem_per_sm.value / 1024);
