@@ -94,6 +94,8 @@ mod hash;
 mod parallel;
 mod source;
 mod toolkit;
+#[cfg(feature = "heuristics")]
+mod calibration;
 
 // Re-export main types
 #[cfg(feature = "heuristics")]
@@ -104,12 +106,24 @@ pub use arch_metrics::{
     Measured, ModelType,
 };
 pub use builder::{KernelBuilder, PtxOutput};
+#[cfg(feature = "heuristics")]
+pub mod predictor;
+
 #[cfg(feature = "capabilities")]
 pub use capabilities::{
     emit_check_cfgs, emit_detailed_feature_summary, emit_rustc_cfgs, emit_toolkit_cfgs,
-    evaluate_hw_capabilities, evaluate_toolkit_capabilities, get_capabilities_results,
-    get_toolkit_capabilities_results, print_summary_once, Capability, ToolkitCapability,
-    CAPABILITIES, TOOLKIT_CAPABILITIES,
+    evaluate_hw_capabilities, evaluate_toolkit_capabilities,
+    get_capabilities_results, get_toolkit_capabilities_results, print_summary_once, Capability,
+    ToolkitCapability, CAPABILITIES, TOOLKIT_CAPABILITIES,
+};
+
+#[cfg(feature = "heuristics")]
+pub use capabilities::{
+    evaluate_library_capabilities, LibraryCapability, TargetLibrary, LIBRARY_CAPABILITIES,
+};
+#[cfg(feature = "heuristics")]
+pub use predictor::{
+    Affinity, DType, HardwarePredictor, KernelPrediction, PressureRisk, ProblemShape,
 };
 #[cfg(feature = "heuristics")]
 pub use capabilities::write_heuristics_rs;
@@ -120,6 +134,9 @@ pub use hash::BuildCache;
 pub use parallel::ParallelConfig;
 pub use source::{collect_headers, SourceSelector};
 pub use toolkit::{CudaToolkit, CudaVersion};
+
+#[cfg(feature = "heuristics")]
+pub use calibration::{CalibrationEngine, CalibrationProbe, BandwidthProbe, ComputeProbe};
 
 /// Convenience alias for the main builder type
 pub type Builder = KernelBuilder;

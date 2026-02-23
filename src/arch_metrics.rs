@@ -60,6 +60,30 @@ pub enum ModelType {
     Heuristic,
 }
 
+/// Metrics that can be empirically calibrated via runtime probes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalibrationMetric {
+    /// Peak DRAM bandwidth in GB/s.
+    DramBandwidth,
+    /// Peak L2 cache bandwidth in GB/s.
+    L2Bandwidth,
+    /// Peak FP32 arithmetic throughput in TFLOPS.
+    Fp32Compute,
+    /// Peak FP16 arithmetic throughput in TFLOPS.
+    Fp16Compute,
+    /// Peak Tensor Core (FP16/BF16) throughput in TFLOPS.
+    TensorCoreCompute,
+}
+
+/// A measured fact about the current hardware used to calibrate the model.
+#[derive(Debug, Clone)]
+pub struct CalibrationFact {
+    /// The metric being reported.
+    pub metric: CalibrationMetric,
+    /// The measured value (e.g., GiB/s or TFLOPS).
+    pub measured_value: f32,
+}
+
 /// A value annotated with its provenance and optional calibration factor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Measured<T> {
@@ -99,6 +123,13 @@ impl<T> Measured<T> {
             source: DataSource::UserProvided,
             calibration_factor: None,
         }
+    }
+}
+
+impl Measured<f32> {
+    /// Returns the effective value (value * calibration_factor).
+    pub fn effective(&self) -> f32 {
+        self.value * self.calibration_factor.unwrap_or(1.0)
     }
 }
 
@@ -146,9 +177,50 @@ pub struct ArchObservables {
     pub fp8_flops_tflops: Measured<f32>,
     /// Peak INT8 throughput in TOPS (dense, w/ Tensor Cores or DP4A, **SKU-specific**)
     pub int8_tops: Measured<f32>,
+    /// Maximum concurrent warps per SM (source: CUDA Prog Guide Table 16)
+    pub max_warps_per_sm: Measured<u32>,
+    /// Maximum resident thread blocks per SM (source: CUDA Prog Guide Table 16)
+    pub max_blocks_per_sm: Measured<u32>,
+    /// Number of warp schedulers per SM
+    pub schedulers_per_sm: Measured<u32>,
+    /// Peak L2 cache bandwidth in GB/s (**SKU-specific**)
+    pub l2_bandwidth_gbps: Measured<f32>,
+    /// Peak Shared Memory bandwidth across the entire GPU in GB/s (**SKU-specific**)
+    pub shared_mem_bandwidth_gbps: Measured<f32>,
 }
 
 impl ArchObservables {
+    /// Applies empirical measurements to calibrate the architecture model.
+    ///
+    /// This updates the `calibration_factor` of internal metrics based on the
+    /// ratio between the measured value and the architecturally expected (spec) value.
+    pub fn calibrate(&mut self, facts: &[CalibrationFact]) {
+        for fact in facts {
+            match fact.metric {
+                CalibrationMetric::DramBandwidth => {
+                    self.dram_bandwidth_gbps.calibration_factor =
+                        Some(fact.measured_value / self.dram_bandwidth_gbps.value);
+                }
+                CalibrationMetric::L2Bandwidth => {
+                    self.l2_bandwidth_gbps.calibration_factor =
+                        Some(fact.measured_value / self.l2_bandwidth_gbps.value);
+                }
+                CalibrationMetric::Fp32Compute => {
+                    self.fp32_flops_tflops.calibration_factor =
+                        Some(fact.measured_value / self.fp32_flops_tflops.value);
+                }
+                CalibrationMetric::Fp16Compute => {
+                    self.tensor_core_flops_tflops.calibration_factor =
+                        Some(fact.measured_value / self.tensor_core_flops_tflops.value);
+                }
+                CalibrationMetric::TensorCoreCompute => {
+                    self.tensor_core_flops_tflops.calibration_factor =
+                        Some(fact.measured_value / self.tensor_core_flops_tflops.value);
+                }
+            }
+        }
+    }
+
     /// Build observables from a compute capability using NVIDIA specification data.
     ///
     /// Values correspond to **flagship SKUs** for each architecture. The
@@ -191,6 +263,11 @@ impl ArchObservables {
                 fp32_flops_tflops: sf32(90.0),
                 fp8_flops_tflops: sf32(4500.0),
                 int8_tops: sf32(4500.0),
+                max_warps_per_sm: su32(64),
+                max_blocks_per_sm: su32(16),
+                schedulers_per_sm: su32(4),
+                l2_bandwidth_gbps: sf32(12000.0),
+                shared_mem_bandwidth_gbps: sf32(25000.0),
             },
             // ── Hopper ───────────────────────────────────────────────
             90 => Self {
@@ -205,6 +282,11 @@ impl ArchObservables {
                 fp32_flops_tflops: sf32(66.9),
                 fp8_flops_tflops: sf32(1979.0),
                 int8_tops: sf32(1979.0),
+                max_warps_per_sm: su32(64),
+                max_blocks_per_sm: su32(32),
+                schedulers_per_sm: su32(4),
+                l2_bandwidth_gbps: sf32(12500.0), // ~12TB/s theoretical L2 BW H100
+                shared_mem_bandwidth_gbps: sf32(23000.0), // ~23TB/s theoretical SMEM BW H100
             },
             // ── Ada Lovelace ─────────────────────────────────────────
             89 => Self {
@@ -219,6 +301,11 @@ impl ArchObservables {
                 fp32_flops_tflops: sf32(82.6),
                 fp8_flops_tflops: sf32(660.0),
                 int8_tops: sf32(660.0),
+                max_warps_per_sm: su32(48),
+                max_blocks_per_sm: su32(24),
+                schedulers_per_sm: su32(4),
+                l2_bandwidth_gbps: sf32(5000.0),
+                shared_mem_bandwidth_gbps: sf32(8500.0),
             },
             // ── Jetson AGX Orin ──────────────────────────────────────
             87 => Self {
@@ -233,6 +320,11 @@ impl ArchObservables {
                 fp32_flops_tflops: sf32(21.3),
                 fp8_flops_tflops: sf32(0.0),
                 int8_tops: sf32(170.0),
+                max_warps_per_sm: su32(48),
+                max_blocks_per_sm: su32(16),
+                schedulers_per_sm: su32(4),
+                l2_bandwidth_gbps: sf32(700.0),
+                shared_mem_bandwidth_gbps: sf32(1200.0),
             },
             // ── Ampere consumer ──────────────────────────────────────
             86 => Self {
@@ -247,6 +339,11 @@ impl ArchObservables {
                 fp32_flops_tflops: sf32(29.8),
                 fp8_flops_tflops: sf32(0.0),
                 int8_tops: sf32(348.0),
+                max_warps_per_sm: su32(48),
+                max_blocks_per_sm: su32(16),
+                schedulers_per_sm: su32(4),
+                l2_bandwidth_gbps: sf32(2500.0),
+                shared_mem_bandwidth_gbps: sf32(4500.0),
             },
             // ── Ampere data center ───────────────────────────────────
             80 => Self {
@@ -261,6 +358,11 @@ impl ArchObservables {
                 fp32_flops_tflops: sf32(19.5),
                 fp8_flops_tflops: sf32(0.0),
                 int8_tops: sf32(624.0),
+                max_warps_per_sm: su32(64),
+                max_blocks_per_sm: su32(32),
+                schedulers_per_sm: su32(4),
+                l2_bandwidth_gbps: sf32(6000.0),
+                shared_mem_bandwidth_gbps: sf32(19000.0),
             },
             // ── Turing ───────────────────────────────────────────────
             75 => Self {
@@ -275,6 +377,11 @@ impl ArchObservables {
                 fp32_flops_tflops: sf32(11.2),
                 fp8_flops_tflops: sf32(0.0),
                 int8_tops: sf32(130.0),
+                max_warps_per_sm: su32(32),
+                max_blocks_per_sm: su32(16),
+                schedulers_per_sm: su32(4),
+                l2_bandwidth_gbps: sf32(2000.0),
+                shared_mem_bandwidth_gbps: sf32(3000.0),
             },
             // ── Volta ────────────────────────────────────────────────
             70 => Self {
@@ -289,6 +396,11 @@ impl ArchObservables {
                 fp32_flops_tflops: sf32(15.7),
                 fp8_flops_tflops: sf32(0.0),
                 int8_tops: sf32(0.0),
+                max_warps_per_sm: su32(64),
+                max_blocks_per_sm: su32(32),
+                schedulers_per_sm: su32(4),
+                l2_bandwidth_gbps: sf32(3100.0),
+                shared_mem_bandwidth_gbps: sf32(14000.0),
             },
             // ── Pascal and older ─────────────────────────────────────
             _ => Self {
@@ -303,6 +415,11 @@ impl ArchObservables {
                 fp32_flops_tflops: sf32(11.3),
                 fp8_flops_tflops: sf32(0.0),
                 int8_tops: sf32(45.2), // DP4A throughput ≈ 4× FP32
+                max_warps_per_sm: su32(64),
+                max_blocks_per_sm: su32(32),
+                schedulers_per_sm: su32(4), // GP102
+                l2_bandwidth_gbps: sf32(1300.0),
+                shared_mem_bandwidth_gbps: sf32(3500.0),
             },
         }
     }
@@ -364,11 +481,12 @@ pub fn theoretical_occupancy_limit(obs: &ArchObservables, regs_per_thread: u32) 
 /// Kernels with operational intensity below this value are memory-bound;
 /// above are compute-bound. This is the "ridge point" of the roofline.
 pub fn roofline_intensity(obs: &ArchObservables) -> f32 {
-    if obs.dram_bandwidth_gbps.value <= 0.0 {
+    let dram_bw = obs.dram_bandwidth_gbps.effective();
+    if dram_bw <= 0.0 {
         return 0.0;
     }
     // Convert TFLOPS to GFLOPS for unit consistency with GB/s
-    (obs.fp32_flops_tflops.value * 1000.0) / obs.dram_bandwidth_gbps.value
+    (obs.fp32_flops_tflops.effective() * 1000.0) / dram_bw
 }
 
 /// Roofline arithmetic intensity threshold for FP8 Tensor Core workloads (FLOP/Byte).
@@ -393,10 +511,12 @@ pub fn roofline_intensity(obs: &ArchObservables) -> f32 {
 /// Higher ridge point means harder to saturate compute — more kernels will
 /// be memory-bound in FP8 than in FP32. Guides tile/prefetch strategy.
 pub fn roofline_intensity_fp8(obs: &ArchObservables) -> f32 {
-    if obs.dram_bandwidth_gbps.value <= 0.0 || obs.fp8_flops_tflops.value <= 0.0 {
+    let dram_bw = obs.dram_bandwidth_gbps.effective();
+    let fp8_flops = obs.fp8_flops_tflops.effective();
+    if dram_bw <= 0.0 || fp8_flops <= 0.0 {
         return 0.0;
     }
-    (obs.fp8_flops_tflops.value * 1000.0) / obs.dram_bandwidth_gbps.value
+    (fp8_flops * 1000.0) / dram_bw
 }
 
 /// Roofline arithmetic intensity threshold for INT8 workloads (OP/Byte).
@@ -419,11 +539,13 @@ pub fn roofline_intensity_fp8(obs: &ArchObservables) -> f32 {
 /// # Interpretation
 /// Guides W8A8 quantized inference kernel design: tile sizes, prefetch depth.
 pub fn roofline_intensity_int8(obs: &ArchObservables) -> f32 {
-    if obs.dram_bandwidth_gbps.value <= 0.0 || obs.int8_tops.value <= 0.0 {
+    let dram_bw = obs.dram_bandwidth_gbps.effective();
+    let int8_ops = obs.int8_tops.effective();
+    if dram_bw <= 0.0 || int8_ops <= 0.0 {
         return 0.0;
     }
     // INT8 TOPS and DRAM GB/s are both in Giga-units, so ratio gives OP/Byte
-    (obs.int8_tops.value * 1000.0) / obs.dram_bandwidth_gbps.value
+    (int8_ops * 1000.0) / dram_bw
 }
 
 /// Ratio of Tensor Core FP16 peak throughput to FP32 scalar peak throughput.
@@ -442,10 +564,11 @@ pub fn roofline_intensity_int8(obs: &ArchObservables) -> f32 {
 /// - `> 5.0` = TC strongly dominate; prefer TC paths for eligible ops
 /// - `> 10.0` = TC are the primary compute engine (Hopper+)
 pub fn tensor_core_dominance(obs: &ArchObservables) -> f32 {
-    if obs.fp32_flops_tflops.value <= 0.0 {
+    let fp32_flops = obs.fp32_flops_tflops.effective();
+    if fp32_flops <= 0.0 {
         return 0.0;
     }
-    obs.tensor_core_flops_tflops.value / obs.fp32_flops_tflops.value
+    obs.tensor_core_flops_tflops.effective() / fp32_flops
 }
 
 /// Ratio of FP8 Tensor Core peak throughput to FP32 scalar peak throughput.
@@ -463,10 +586,11 @@ pub fn tensor_core_dominance(obs: &ArchObservables) -> f32 {
 /// Useful for deciding whether to quantize to FP8: if ratio is high enough,
 /// even moderate accuracy loss is compensated by throughput gain.
 pub fn fp8_to_fp32_ratio(obs: &ArchObservables) -> f32 {
-    if obs.fp32_flops_tflops.value <= 0.0 {
+    let fp32_flops = obs.fp32_flops_tflops.effective();
+    if fp32_flops <= 0.0 {
         return 0.0;
     }
-    obs.fp8_flops_tflops.value / obs.fp32_flops_tflops.value
+    obs.fp8_flops_tflops.effective() / fp32_flops
 }
 
 /// Ratio of INT8 peak throughput to FP32 scalar peak throughput.
@@ -486,10 +610,11 @@ pub fn fp8_to_fp32_ratio(obs: &ArchObservables) -> f32 {
 /// Useful for W8A8 quantized inference: if ratio is high, INT8 quantization
 /// delivers massive throughput even with some accuracy degradation.
 pub fn int8_to_fp32_ratio(obs: &ArchObservables) -> f32 {
-    if obs.fp32_flops_tflops.value <= 0.0 {
+    let fp32_flops = obs.fp32_flops_tflops.effective();
+    if fp32_flops <= 0.0 {
         return 0.0;
     }
-    obs.int8_tops.value / obs.fp32_flops_tflops.value
+    obs.int8_tops.effective() / fp32_flops
 }
 
 /// Maximum number of elements that fit in shared memory for a GEMM tile.

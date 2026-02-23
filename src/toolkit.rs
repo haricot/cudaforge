@@ -26,6 +26,30 @@ pub struct CudaVersion {
     pub minor: u32,
 }
 
+/// Parsed cuDNN version
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CudnnVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl CudnnVersion {
+    pub fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Self { major, minor, patch }
+    }
+
+    pub fn at_least(&self, major: u32, minor: u32) -> bool {
+        (self.major, self.minor) >= (major, minor)
+    }
+}
+
+impl std::fmt::Display for CudnnVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
 impl CudaVersion {
     /// Create a new CUDA version
     pub fn new(major: u32, minor: u32) -> Self {
@@ -84,6 +108,8 @@ pub struct CudaToolkit {
     pub version: Option<String>,
     /// Parsed CUDA version for capability checks
     pub parsed_version: Option<CudaVersion>,
+    /// Parsed cuDNN version (if detected)
+    pub cudnn_version: Option<CudnnVersion>,
 }
 
 impl CudaToolkit {
@@ -112,6 +138,7 @@ impl CudaToolkit {
 
         let version = detect_cuda_version(&nvcc_path);
         let parsed_version = version.as_deref().and_then(CudaVersion::parse);
+        let cudnn_version = detect_cudnn_version(&include_dir);
 
         Ok(Self {
             nvcc_path,
@@ -119,6 +146,7 @@ impl CudaToolkit {
             lib_dir,
             version,
             parsed_version,
+            cudnn_version,
         })
     }
 
@@ -142,6 +170,7 @@ impl CudaToolkit {
 
         let version = detect_cuda_version(&nvcc_path);
         let parsed_version = version.as_deref().and_then(CudaVersion::parse);
+        let cudnn_version = detect_cudnn_version(&include_dir);
 
         Ok(Self {
             nvcc_path,
@@ -149,6 +178,7 @@ impl CudaToolkit {
             lib_dir,
             version,
             parsed_version,
+            cudnn_version,
         })
     }
 
@@ -273,6 +303,108 @@ fn detect_cuda_version(nvcc_path: &PathBuf) -> Option<String> {
     }
 
     None
+}
+
+/// Detect cuDNN version by scanning headers
+fn detect_cudnn_version(cuda_include: &PathBuf) -> Option<CudnnVersion> {
+    let mut search_paths = Vec::new();
+
+    // 1. Check CUDNN_HOME
+    if let Ok(home) = std::env::var("CUDNN_HOME") {
+        let home_path = PathBuf::from(home);
+        search_paths.push(home_path.join("include"));
+        search_paths.push(home_path.clone());
+    }
+    // 2. Check CUDNN_LIB
+    if let Ok(lib) = std::env::var("CUDNN_LIB") {
+        let lib_path = PathBuf::from(lib);
+        search_paths.push(lib_path.join("include"));
+        search_paths.push(lib_path.clone());
+        if let Some(parent) = lib_path.parent() {
+            search_paths.push(parent.join("include"));
+            search_paths.push(parent.to_path_buf());
+        }
+    }
+    // 3. Scan LD_LIBRARY_PATH
+    if let Ok(ld_path) = std::env::var("LD_LIBRARY_PATH") {
+        for path_str in std::env::split_paths(&ld_path) {
+            search_paths.push(path_str.join("include"));
+            if let Some(parent) = path_str.parent() {
+                search_paths.push(parent.join("include"));
+            }
+        }
+    }
+    // 3. CUDA include path
+    search_paths.push(cuda_include.clone());
+    // 4. Common system paths
+    search_paths.push(PathBuf::from("/usr/include"));
+    search_paths.push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
+
+    for path in search_paths {
+        if !path.exists() { 
+            continue; 
+        }
+        
+        // Prefer cudnn_version.h (v8+), fallback to cudnn.h
+        let v_h = path.join("cudnn_version.h");
+        let h = path.join("cudnn.h");
+        
+        let target = if v_h.exists() { Some(v_h) } else if h.exists() { Some(h) } else { None };
+        
+        if let Some(header) = target {
+            if let Ok(content) = std::fs::read_to_string(&header) {
+                let major = extract_define(&content, "CUDNN_MAJOR");
+                let minor = extract_define(&content, "CUDNN_MINOR");
+                let patch = extract_define(&content, "CUDNN_PATCHLEVEL");
+                
+                if let (Some(maj), Some(min), Some(pat)) = (major, minor, patch) {
+                    return Some(CudnnVersion::new(maj, min, pat));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_define(content: &str, name: &str) -> Option<u32> {
+    let re = re_define(name);
+    for line in content.lines() {
+        if let Some(caps) = re.captures(line) {
+            return caps.val.parse().ok();
+        }
+    }
+    None
+}
+
+// Simple regex replacement since we don't have regex crate in dependencies (checked Cargo.toml earlier)
+// Actually Cargo.toml had: glob, num_cpus, rayon, which, sha2, walkdir, anyhow, serde, serde_json, thiserror, fs2. No regex.
+// I'll use simple string matching.
+
+fn re_define(name: &str) -> SimpleDefineMatcher {
+    SimpleDefineMatcher { name: name.to_string() }
+}
+
+struct SimpleDefineMatcher {
+    name: String,
+}
+
+impl SimpleDefineMatcher {
+    fn captures<'a>(&self, line: &'a str) -> Option<SimpleCaps<'a>> {
+        let line = line.trim();
+        if !line.starts_with("#define") { return None; }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 && parts[1] == self.name {
+            return Some(SimpleCaps { val: parts[2] });
+        }
+        None
+    }
+}
+
+struct SimpleCaps<'a> {
+    val: &'a str,
+}
+
+impl<'a> SimpleCaps<'a> {
 }
 
 #[cfg(test)]

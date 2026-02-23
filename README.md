@@ -21,6 +21,7 @@ Advanced CUDA kernel builder for Rust with **incremental builds**, **auto-detect
 - 📁 **Flexible Sources** - Directory, glob, files, or exclude patterns
 - 🔬 **Hardware Capabilities** - Auto-detect and expose GPU features as `cfg` flags and C++ macros
 - 📊 **Architectural Metrics** - Roofline models, occupancy, precision ratios as C defines for JIT
+- 🔮 **Hardware Predictor** - Prescriptive Decision Oracle for runtimes providing shape physics and performance signatures
 
 ## Installation
 
@@ -366,6 +367,21 @@ fn compile_kernel(kernel_source: &str) {
     // Compile with NVRTC — 100% static metrics, 0ms runtime detection overhead!
     nvrtc_compile(&source_with_metrics); 
 }
+```
+
+### Prescriptive Decision Oracle (Hardware Predictor)
+
+CudaForge includes a `"runtime-grade"` predictor that acts as a Prescriptive Decision Oracle for graph compilers and runtimes. By passing the `ProblemShape` (e.g., GEMM M, N, K), the oracle provides executable intents to bypass brute-force autotuning:
+
+- **Shape Physics**: Categorizes workloads (e.g., `LargeSquare`, `KDominant`, `TallSkinnyM`) and explains the exact *Tiling Rationale* (e.g., whether to use double-buffering or hardware asynchronous staging).
+- **Physical Realism**: Architecture-aware ceilings ensure a Pascal GPU reports `Latency-masked compute regime` while Hopper reports `Compute Bound (Tensor Core limited)`.
+- **Nuanced Utilization**: Predicts `flop_utilization` and `bw_utilization` by accounting for tile-level reuse and edge wave quantization.
+- **Verification Targets**: Emits actionable assertions (`expected_issue_utilization`, `expected_stall_reason`) that runtimes can use to self-validate against Nsight Compute.
+- **Interval Predictions**: Provides `expected_runtime_us` with a statistical `runtime_interval_us`.
+
+```bash
+# Output the predictor intent as machine-consumable JSON
+cargo run --bin cudaforge-inspect --features heuristics -- --json --m 2048 --n 2048 --k 2048
 ```
 
 ## Incremental Builds

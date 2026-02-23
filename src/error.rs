@@ -53,4 +53,16 @@ pub enum Error {
     /// Invalid configuration
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
+
+    /// CUDA compilation failed (general)
+    #[error("CUDA compilation failed: {0}")]
+    CudaCompilationFailed(String),
+
+    /// Runtime execution error
+    #[error("Runtime error: {0}")]
+    RuntimeError(String),
+
+    /// Generic toolkit not found error
+    #[error("Toolkit not found: {0}")]
+    ToolkitNotFound(String),
 }

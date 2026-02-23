@@ -1,7 +1,7 @@
 //! Hardware and toolkit capabilities registry for CUDA devices
 //!
 //! This module provides two capability registries:
-//! - [`CAPABILITIES`]: Hardware capabilities gated on GPU compute capability (SM version)
+//! - [`CAPABILITIES`]: Hardware capabilities gated on GPU compute capability (CC version)
 //! - [`TOOLKIT_CAPABILITIES`]: Runtime/toolkit capabilities gated on CUDA toolkit version
 //!   (and optionally compute capability)
 
@@ -21,7 +21,7 @@
 /// let arch = cudaforge::detect_compute_cap()?;
 /// cudaforge::set_cfg!(builder, "has_wgmma", arch.base >= 90);
 /// ```
-#[macro_export]
+#[macro_export] 
 macro_rules! set_cfg {
     ($builder:expr, $name:expr, $value:expr) => {
         println!("cargo::rustc-check-cfg=cfg({})", $name);
@@ -79,7 +79,12 @@ pub const CAPABILITIES: &[Capability] = &[
         description: "CUDA Memory Pools: Efficient stream-ordered memory allocation/deallocation via cudaMallocAsync/cudaFreeAsync, reducing allocation overhead. (CUDA 11.2+ runtime, CC 3.5+)",
         check: |arch| arch.base >= 35,
     },
-    // ── Maxwell/Pascal (CC 5.3 – 6.x) ── Arithmetic foundations ──────────────
+    // ── Kepler (CC 3.0 – 3.7) ── Foundational features ──────────────────────
+    Capability {
+        name: "has_warp_shuffle",
+        description: "Warp Shuffle (__shfl_sync): Direct data exchange between threads in a warp. Avoids shared memory for thread-sync within 32 threads. (CC 3.0+)",
+        check: |arch| arch.base >= 30,
+    },
     Capability {
         name: "has_f16",
         description: "FP16 (half precision): 16-bit float, half the size of f32. Enables faster inference on memory-bound workloads. Available since Maxwell (CC 5.3).",
@@ -101,9 +106,19 @@ pub const CAPABILITIES: &[Capability] = &[
         check: |arch| arch.base >= 60,
     },
     Capability {
-        name: "has_dp4a",
-        description: "DP4A: Dot Product of 4x8-bit integers accumulated into 32-bit. First HW-accelerated INT8 inference instruction. (CC 6.1+, e.g. GTX 1080)",
+        name: "has_int8",
+        description: "INT8 arithmetic: Generic 8-bit integer support via DP4A (dot product) or Tensor Cores. (CC 6.1+)",
         check: |arch| arch.base >= 61,
+    },
+    Capability {
+        name: "has_dp4a",
+        description: "DP4A: Dot Product of 4x8-bit integers accumulated into 32-bit. (CC 6.1+)",
+        check: |arch| arch.base >= 61,
+    },
+    Capability {
+        name: "has_int4",
+        description: "INT4 compute: 4-bit integer operations, primarily via Tensor Cores. (CC 7.5+)",
+        check: |arch| arch.base >= 75,
     },
     // ── Volta/Turing (CC 7.0 – 7.5) ── Tensor Cores era ─────────────────────
     Capability {
@@ -235,6 +250,11 @@ pub const CAPABILITIES: &[Capability] = &[
     },
     // ── Hopper (CC 9.0) ── Data logistics revolution ─────────────────────────
     Capability {
+        name: "has_wgmma",
+        description: "WGMMA (Warp Group MMA): Asynchronous matrix multiply-accumulate instruction operating on 128 threads simultaneously for massive GEMM throughput. (CC 9.0+)",
+        check: |arch| arch.base >= 90,
+    },
+    Capability {
         name: "has_tma",
         description: "TMA (Tensor Memory Accelerator): DMA engine that moves N-dimensional tiles between global↔shared memory. Zero CUDA cores used. (CC 9.0+)",
         check: |arch| arch.base >= 90,
@@ -337,7 +357,7 @@ pub const CAPABILITIES: &[Capability] = &[
     },
     Capability {
         name: "has_tma_v2",
-        description: "TMA v2: Enhanced Tensor Memory Accelerator with queuing & async scheduling primitives not available on SM 120. (CC == 100)",
+        description: "TMA v2: Enhanced Tensor Memory Accelerator with queuing & async scheduling primitives not available on CC 120. (CC == 100)",
         check: |arch| arch.base == 100,
     },
     Capability {
@@ -357,7 +377,7 @@ pub const CAPABILITIES: &[Capability] = &[
     },
     Capability {
         name: "is_data_center_gpu",
-        description: "Data center GPU: Distinguishes SM 100 (B200/B100), SM 90 (H100), and SM 70 (V100) from consumer parts. Guards kernels relying on advanced inter-GPU communication. (CC 70, 90, or 100)",
+        description: "Data center GPU: Distinguishes CC 100 (B200/B100), CC 90 (H100), and CC 70 (V100) from consumer parts. Guards kernels relying on advanced inter-GPU communication. (CC 70, 90, or 100)",
         check: |arch| arch.base == 100 || arch.base == 90 || arch.base == 70,
     },
     Capability {
@@ -391,8 +411,8 @@ pub struct ToolkitCapability {
     pub name: &'static str,
     /// Detailed description of what this capability does
     pub description: &'static str,
-    /// Function to check if the capability is available given arch + toolkit version
-    pub check: fn(&crate::compute_cap::GpuArch, &crate::toolkit::CudaVersion) -> bool,
+    /// Function to check if the capability is available given arch + toolkit version + cuDNN version
+    pub check: fn(&crate::compute_cap::GpuArch, &crate::toolkit::CudaVersion, Option<&crate::toolkit::CudnnVersion>) -> bool,
 }
 
 /// List of capabilities that depend on the CUDA toolkit version.
@@ -404,67 +424,193 @@ pub const TOOLKIT_CAPABILITIES: &[ToolkitCapability] = &[
     ToolkitCapability {
         name: "has_nvrtc",
         description: "NVRTC: Runtime compilation of CUDA C++ to PTX. (CUDA 7.0+)",
-        check: |_arch, ver| ver.at_least(7, 0),
+        check: |_arch, ver, _cudnn| ver.at_least(7, 0),
     },
     ToolkitCapability {
         name: "has_p2p_copy",
-        description: "Peer-to-Peer copy: Direct GPU-to-GPU memory transfers. Requires both CC 3.0+ and CUDA 4.0+ runtime.",
-        check: |arch, ver| arch.base >= 30 && ver.at_least(4, 0),
+        description: "Peer-to-Peer copy: Direct GPU-to-GPU memory transfers. (CUDA 4.0+, CC 3.0+)",
+        check: |arch, ver, _cudnn| arch.base >= 30 && ver.at_least(4, 0),
     },
     ToolkitCapability {
         name: "has_cooperative_launch",
-        description: "Cooperative Launch: cudaLaunchCooperativeKernel API for grid-wide synchronization. Requires both CC 6.0+ and CUDA 9.0+ runtime.",
-        check: |arch, ver| arch.base >= 60 && ver.at_least(9, 0),
+        description: "Cooperative Launch: cudaLaunchCooperativeKernel API for grid-wide synchronization. (CUDA 9.0+, CC 6.0+)",
+        check: |arch, ver, _cudnn| arch.base >= 60 && ver.at_least(9, 0),
     },
     ToolkitCapability {
         name: "has_cuda_graphs",
-        description: "CUDA Graphs: Capture a sequence of GPU operations and replay them with minimal CPU overhead. Reduces kernel launch latency. (CUDA 10.0+, CC 3.0+)",
-        check: |arch, ver| arch.base >= 30 && ver.at_least(10, 0),
+        description: "CUDA Graphs: Capture a sequence of GPU operations and replay them with minimal CPU overhead. (CUDA 10.0+, CC 3.0+)",
+        check: |arch, ver, _cudnn| arch.base >= 30 && ver.at_least(10, 0),
     },
     ToolkitCapability {
         name: "has_stream_capture_v2",
         description: "Stream Capture v2: Enhanced stream-to-graph capture API with improved handling of dependencies and performance. (CUDA 11.0+)",
-        check: |_arch, ver| ver.at_least(11, 0),
+        check: |_arch, ver, _cudnn| ver.at_least(11, 0),
     },
     ToolkitCapability {
         name: "has_cublas_lt",
-        description: "cuBLAS LT (Lightweight): Flexible GEMM API with algorithm selection, epilogue fusion, and layout control. (CUDA 10.1+)",
-        check: |_arch, ver| ver.at_least(10, 1),
+        description: "cuBLAS Lt: Lightweight GEMM API with algorithm selection and fusion. (CUDA 10.1+)",
+        check: |_arch, ver, _cudnn| ver.at_least(10, 1),
+    },
+    ToolkitCapability {
+        name: "has_cublaslt_fused_epilogue",
+        description: "cuBLAS Lt Fused Epilogue: Support for fusion of GEMM + Bias + Activation. (CUDA 11.0+)",
+        check: |_arch, ver, _cudnn| ver.at_least(11, 0),
+    },
+    ToolkitCapability {
+        name: "has_cublaslt_matmul_fp8",
+        description: "cuBLAS Lt FP8 GEMM: Optimized 8-bit float matrix multiplication. (CUDA 11.8+, CC 8.9+)",
+        check: |arch, ver, _cudnn| arch.base >= 89 && ver.at_least(11, 8),
+    },
+    ToolkitCapability {
+        name: "has_cublaslt_matmul_bf16",
+        description: "cuBLAS Lt BF16 GEMM: Native BFloat16 matrix multiplication support. (CC 8.0+)",
+        check: |arch, _ver, _cudnn| arch.base >= 80,
+    },
+    ToolkitCapability {
+        name: "has_cublaslt_matmul_int8",
+        description: "cuBLAS Lt INT8 GEMM: Native accelerated 8-bit integer GEMM via IMMA. (CC 7.5+)",
+        check: |arch, _ver, _cudnn| arch.base >= 75,
     },
     ToolkitCapability {
         name: "has_memory_pools",
         description: "CUDA Memory Pools: Stream-ordered allocation via cudaMallocAsync/cudaFreeAsync. Reduces allocation overhead. (CUDA 11.2+, CC 3.5+)",
-        check: |arch, ver| arch.base >= 35 && ver.at_least(11, 2),
+        check: |arch, ver, _cudnn| arch.base >= 35 && ver.at_least(11, 2),
     },
     ToolkitCapability {
         name: "has_cusparselt",
-        description: "cuSPARSELt: Library for structured sparsity (2:4) on Tensor Cores. Requires CUDA 11.2+ and CC 8.0+.",
-        check: |arch, ver| arch.base >= 80 && ver.at_least(11, 2),
+        description: "cuSPARSELt: Library for structured sparsity (2:4) on Tensor Cores. (CUDA 11.2+, CC 8.0+)",
+        check: |arch, ver, _cudnn| arch.base >= 80 && ver.at_least(11, 2),
     },
     ToolkitCapability {
         name: "has_nvjitlink",
         description: "NVJitLink: Runtime PTX JIT link-time library for linking PTX and objects into a executable. (CUDA 11.4+)",
-        check: |_arch, ver| ver.at_least(11, 4),
+        check: |_arch, ver, _cudnn| ver.at_least(11, 4),
     },
     ToolkitCapability {
         name: "has_cuda_graph_updates",
         description: "CUDA Graph Updates: Support for updating/reconfiguring graph nodes without full reconstruction. (CUDA 11.4+)",
-        check: |_arch, ver| ver.at_least(11, 4),
+        check: |_arch, ver, _cudnn| ver.at_least(11, 4),
     },
     ToolkitCapability {
         name: "has_transformer_engine",
-        description: "Transformer Engine: Automatic FP8 mixed-precision for attention & FFN with dynamic scaling. Requires CUDA 11.8+ and CC 8.9+ (Ada/Hopper).",
-        check: |arch, ver| arch.base >= 89 && ver.at_least(11, 8),
+        description: "Transformer Engine: Automatic FP8 mixed-precision with dynamic scaling. (CUDA 11.8+, CC 8.9+)",
+        check: |arch, ver, _cudnn| arch.base >= 89 && ver.at_least(11, 8),
     },
     ToolkitCapability {
         name: "has_cuda12_features",
         description: "CUDA 12 Features: New APIs including cudaGraphInstantiateWithParams, improved driver API, green contexts. (CUDA 12.0+)",
-        check: |_arch, ver| ver.at_least(12, 0),
+        check: |_arch, ver, _cudnn| ver.at_least(12, 0),
     },
     ToolkitCapability {
         name: "has_cudnn9",
-        description: "cuDNN 9.x compatibility: Graph-based API, fused attention backends, FP8 support. Requires CUDA 12.0+.",
-        check: |_arch, ver| ver.at_least(12, 0),
+        description: "cuDNN 9.x compatibility: Graph-based API, fused attention backends, FP8 support. Requires CUDA 12.0+ and cuDNN 9+.",
+        check: |_arch, ver, cudnn| ver.at_least(12, 0) && cudnn.map_or(false, |v| v.major >= 9),
+    },
+    // ── Granular cuDNN features ──────────────────────────────────────────────
+    ToolkitCapability {
+        name: "has_cudnn_v8",
+        description: "cuDNN v8+: Modern cuDNN API with backend support and fused ops.",
+        check: |_arch, ver, cudnn| ver.at_least(11, 0) || cudnn.map_or(false, |v| v.major >= 8),
+    },
+    // ── cuDNN 1D Operations ──────────────────────────────────────────────────
+    ToolkitCapability {
+        name: "has_cudnn_conv1d_f32",
+        description: "cuDNN Conv1D (FP32): Standard 1D convolutions for audio/time-series.",
+        check: |_arch, ver, cudnn| ver.at_least(11, 0) && cudnn.is_some(),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_conv1d_f16",
+        description: "cuDNN Conv1D (FP16): Accelerated 1D convolutions on Pascal/Volta+. (CC 6.0+)",
+        check: |arch, ver, cudnn| arch.base >= 60 && ver.at_least(11, 0) && cudnn.is_some(),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_conv1d_bf16",
+        description: "cuDNN Conv1D (BF16): Accelerated 1D convolutions on Ampere+. (CC 8.0+)",
+        check: |arch, ver, cudnn| arch.base >= 80 && ver.at_least(11, 0) && cudnn.is_some(),
+    },
+    // ── cuDNN 2D Operations ──────────────────────────────────────────────────
+    ToolkitCapability {
+        name: "has_cudnn_conv2d_f32",
+        description: "cuDNN Conv2D (FP32): Standard 2D convolutions via legacy or backend API.",
+        check: |_arch, ver, cudnn| ver.at_least(7, 0) && cudnn.is_some(),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_conv2d_f16",
+        description: "cuDNN Conv2D (FP16): Native half-precision 2D convolutions. (CC 6.0+)",
+        check: |arch, ver, cudnn| arch.base >= 60 && ver.at_least(11, 0) && cudnn.is_some(),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_conv2d_bf16",
+        description: "cuDNN Conv2D (BF16): Native BFloat16 2D convolutions. (CC 8.0+)",
+        check: |arch, ver, cudnn| arch.base >= 80 && ver.at_least(11, 0) && cudnn.is_some(),
+    },
+    // ── cuDNN Transposed Operations (Fractionally Strided) ───────────────────
+    ToolkitCapability {
+        name: "has_cudnn_conv_transpose1d_f32",
+        description: "cuDNN ConvTranspose1d (FP32): Standard transposed 1D convolutions.",
+        check: |_arch, ver, cudnn| ver.at_least(7, 0) && cudnn.is_some(),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_conv_transpose1d_f16",
+        description: "cuDNN ConvTranspose1d (FP16): Native half-precision transposed 1D convolutions. (CC 6.0+)",
+        check: |arch, ver, cudnn| arch.base >= 60 && ver.at_least(11, 0) && cudnn.is_some(),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_conv_transpose1d_bf16",
+        description: "cuDNN ConvTranspose1d (BF16): Native BFloat16 transposed 1D convolutions. (CC 8.0+)",
+        check: |arch, ver, cudnn| arch.base >= 80 && ver.at_least(11, 0) && cudnn.is_some(),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_conv_transpose2d_f32",
+        description: "cuDNN ConvTranspose2d (FP32): Standard transposed 2D convolutions.",
+        check: |_arch, ver, cudnn| ver.at_least(7, 0) && cudnn.is_some(),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_conv_transpose2d_f16",
+        description: "cuDNN ConvTranspose2d (FP16): Native half-precision transposed 2D convolutions. (CC 6.0+)",
+        check: |arch, ver, cudnn| arch.base >= 60 && ver.at_least(11, 0) && cudnn.is_some(),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_conv_transpose2d_bf16",
+        description: "cuDNN ConvTranspose2d (BF16): Native BFloat16 transposed 2D convolutions. (CC 8.0+)",
+        check: |arch, ver, cudnn| arch.base >= 80 && ver.at_least(11, 0) && cudnn.is_some(),
+    },
+    // ── cuDNN Advanced Features ─────────────────────────────────────────────
+    ToolkitCapability {
+        name: "has_cudnn_fused_attention",
+        description: "cuDNN Fused Attention: Specialized engines for multi-head attention (MHA). (cuDNN 8.9+, CC 8.0+)",
+        check: |arch, ver, cudnn| arch.base >= 80 && ver.at_least(11, 8) && cudnn.map_or(false, |v| v.at_least(8, 9)),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_sdpa",
+        description: "cuDNN SDPA: Scaled Dot-Product Attention support through the Backend API. (cuDNN 8.9+, CC 8.0+)",
+        check: |arch, ver, cudnn| arch.base >= 80 && ver.at_least(11, 8) && cudnn.map_or(false, |v| v.at_least(8, 9)),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_backend_api",
+        description: "cuDNN Backend API: Support for operation graphs, fusion, and runtime engine selection. (cuDNN 8.x+)",
+        check: |_arch, ver, cudnn| ver.at_least(11, 0) && cudnn.map_or(false, |v| v.major >= 8),
+    },
+    // ── Interesting cuDNN Features ──────────────────────────────────────────
+    ToolkitCapability {
+        name: "has_cudnn_graph",
+        description: "cuDNN Graph API: Modern API for building and executing operation graphs (cuDNN 9+).",
+        check: |_arch, _ver, cudnn| cudnn.map_or(false, |v| v.major >= 9),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_normalization",
+        description: "cuDNN Normalization: High-performance BatchNorm, LayerNorm, and RMSNorm kernels.",
+        check: |_arch, _ver, cudnn| cudnn.is_some(),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_pooling",
+        description: "cuDNN Pooling: Optimized Max/Average pooling operations.",
+        check: |_arch, _ver, cudnn| cudnn.is_some(),
+    },
+    ToolkitCapability {
+        name: "has_cudnn_activation",
+        description: "cuDNN Activation: Accelerated ReLu, Sigmoid, Tanh, and other point-wise activations.",
+        check: |_arch, _ver, cudnn| cudnn.is_some(),
     },
 ];
 
@@ -582,11 +728,12 @@ pub fn evaluate_hw_capabilities(arch: &crate::compute_cap::GpuArch) -> Vec<(&'st
 pub fn evaluate_toolkit_capabilities(
     arch: &crate::compute_cap::GpuArch,
     version: &crate::toolkit::CudaVersion,
+    cudnn: Option<&crate::toolkit::CudnnVersion>,
 ) -> Vec<(&'static str, bool)> {
     TOOLKIT_CAPABILITIES
         .iter()
         .map(|cap| {
-            let enabled = (cap.check)(arch, version);
+            let enabled = (cap.check)(arch, version, cudnn);
             (cap.name, enabled)
         })
         .collect()
@@ -614,10 +761,11 @@ pub fn get_capabilities_results(arch: &crate::compute_cap::GpuArch) -> Vec<(&'st
 pub fn get_toolkit_capabilities_results(
     arch: &crate::compute_cap::GpuArch,
     version: &crate::toolkit::CudaVersion,
+    cudnn: Option<&crate::toolkit::CudnnVersion>,
 ) -> Vec<(&'static str, bool)> {
     emit_toolkit_cfgs(version);
 
-    let results = evaluate_toolkit_capabilities(arch, version);
+    let results = evaluate_toolkit_capabilities(arch, version, cudnn);
     for (name, enabled) in &results {
         if *enabled {
             println!("cargo:rustc-cfg={}", name);
@@ -661,9 +809,10 @@ pub fn write_heuristics_rs(arch: &crate::compute_cap::GpuArch) -> std::io::Resul
 pub fn print_summary_once(
     arch: &crate::compute_cap::GpuArch,
     toolkit_version: Option<&crate::toolkit::CudaVersion>,
+    cudnn_version: Option<&crate::toolkit::CudnnVersion>,
 ) {
     let hw_results = get_capabilities_results(arch);
-    let tk_results = toolkit_version.map(|ver| get_toolkit_capabilities_results(arch, ver));
+    let tk_results = toolkit_version.map(|ver| get_toolkit_capabilities_results(arch, ver, cudnn_version));
 
     if let Ok(out_dir) = std::env::var("OUT_DIR") {
         let marker_file = std::path::Path::new(&out_dir).join(".cudaforge_hw_summary_printed");
@@ -703,13 +852,13 @@ pub fn emit_detailed_feature_summary(
         .unwrap_or_default();
     println!("cargo:warning=\r\x1b[1;36m   ╔══ CUDA Capability Summary ═══════════════════════════╗\x1b[0m");
     println!(
-        "cargo:warning=\r\x1b[1;36m   ║\x1b[0m  CC: \x1b[1;33mSM {}{}\x1b[0m{}\x1b[1;36m\x1b[0m",
+        "cargo:warning=\r\x1b[1;36m   ║\x1b[0m  CC: \x1b[1;33mCC {}{}\x1b[0m{}\x1b[1;36m\x1b[0m",
         arch.base, suffix, ver_str
     );
     println!("cargo:warning=\r\x1b[1;36m   ╚════════════════════════════════════════════════════════╝\x1b[0m");
 
     // Hardware capabilities
-    println!("cargo:warning=\r\x1b[1;32m   ┌─ Hardware (SM) ─────────────────────────────────────────┐\x1b[0m");
+    println!("cargo:warning=\r\x1b[1;32m   ┌─ Hardware (CC) ─────────────────────────────────────────┐\x1b[0m");
     for (name, enabled) in hw_results {
         let cap = CAPABILITIES.iter().find(|c| c.name == *name).unwrap();
         let (mark, color) = if *enabled {
@@ -744,4 +893,153 @@ pub fn emit_detailed_feature_summary(
     }
 
     println!("cargo:warning=\r\x1b[1;32m   └─────────────────────────────────────────────────────────┘\x1b[0m");
+}
+
+/// The primary NVIDIA library that utilizes a specific hardware affordance.
+#[cfg(feature = "heuristics")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetLibrary {
+    /// Primarily used by cuBLAS (classic GEMM, throughput-oriented)
+    CuBLAS,
+    /// Primarily used by cuBLASLt (modern GEMM, fusion, fine-grained control)
+    CuBLASLt,
+    /// Primarily used by cuDNN (convolutions, attention, specialized DL ops)
+    CuDNN,
+}
+
+/// Represents a high-level capability or "affordance" that libraries like
+/// cuDNN or cuBLASLt can exploit on a specific GPU architecture.
+#[cfg(feature = "heuristics")]
+#[derive(Debug, Clone)]
+pub struct LibraryCapability {
+    /// The name of the capability
+    pub name: &'static str,
+    /// Detailed description of what this capability enables for libraries
+    pub description: &'static str,
+    /// The primary library that benefits from this capability
+    pub intended_for: TargetLibrary,
+    /// Function to check if the capability is supported based on formal architectural metrics
+    pub check: fn(
+        &crate::compute_cap::GpuArch,
+        &crate::arch_metrics::ArchObservables,
+        &crate::arch_metrics::DerivedProperties,
+    ) -> bool,
+}
+
+/// List of high-level library-facing capabilities (Affordances)
+#[cfg(feature = "heuristics")]
+pub const LIBRARY_CAPABILITIES: &[LibraryCapability] = &[
+    // ── Tensor Core Accumulation Modes ───────────────────────────────────────
+    LibraryCapability {
+        name: "has_fp64_tensorop",
+        description: "FP64 Tensor Cores: Double-precision matrix operations for HPC. (Derived: FP64 TFLOPS > 0 & CC 8.0+)",
+        intended_for: TargetLibrary::CuBLAS,
+        // Assuming we rely on CC 8.0+ for now since fp64_flops_tflops isn't tracked yet
+        check: |arch, _obs, _derived| arch.base >= 80,
+    },
+    LibraryCapability {
+        name: "tensorop_accum_fp32",
+        description: "Tensor Core FP32 Accumulation: High-precision accumulation for low-precision inputs. (Derived: TC Dominance > 0)",
+        intended_for: TargetLibrary::CuBLAS,
+        check: |_arch, _obs, derived| derived.tensor_core_dominance > 0.0,
+    },
+    LibraryCapability {
+        name: "tensorop_accum_fp64",
+        description: "Tensor Core FP64 Accumulation: Double-precision accumulation for FP64 Tensor Cores. (Derived: FP64 Tensor Cores present)",
+        intended_for: TargetLibrary::CuBLAS,
+        check: |arch, _obs, _derived| arch.base >= 80,
+    },
+    LibraryCapability {
+        name: "tensorop_accum_mixed_precision",
+        description: "Mixed Precision Accumulation: Native support for mixed output/accumulation types. (Derived: TC Dominance > 0)",
+        intended_for: TargetLibrary::CuBLAS,
+        check: |_arch, _obs, derived| derived.tensor_core_dominance > 0.0,
+    },
+    // ── Atomic & Reduction Support ───────────────────────────────────────────
+    LibraryCapability {
+        name: "has_fp16_atomic_add",
+        description: "FP16 Atomic Add: Hardware support for atomic addition on 16-bit floats. (Derived: TC Dominance > 0 & CC 7.0+)",
+        intended_for: TargetLibrary::CuBLAS,
+        check: |arch, _obs, derived| derived.tensor_core_dominance > 0.0 && arch.base >= 70,
+    },
+    LibraryCapability {
+        name: "has_fp32_atomic_add",
+        description: "FP32 Atomic Add: Hardware support for atomic addition on 32-bit floats. (Derived: CC 3.0+)",
+        intended_for: TargetLibrary::CuBLAS,
+        check: |arch, _obs, _derived| arch.base >= 30,
+    },
+    LibraryCapability {
+        name: "has_fp64_atomic_add",
+        description: "FP64 Atomic Add: Hardware support for atomic addition on 64-bit floats. (Derived: CC 6.0+)",
+        intended_for: TargetLibrary::CuBLAS,
+        check: |arch, _obs, _derived| arch.base >= 60,
+    },
+    LibraryCapability {
+        name: "supports_split_k_atomic_reduction",
+        description: "Split-K Reduction: Efficient GEMM reduction using atomics. (Derived: High FP32 Roofline || TC Dominance > 0)",
+        intended_for: TargetLibrary::CuBLAS,
+        // Split-K relies on accumulating quickly across stream processors;
+        // highly requested on V100/Turing where compute is fast but waves are small.
+        check: |arch, _obs, derived| arch.base >= 70 || derived.roofline_fp32 > 10.0,
+    },
+    // ── Layout & Vectorization ───────────────────────────────────────────────
+    LibraryCapability {
+        name: "supports_vectorized_ldmatrix",
+        description: "Vectorized ldmatrix: Fast loading of matrix fragments to registers. (Derived: TC Dominance > 0 & Shared Memory >= 64KB)",
+        intended_for: TargetLibrary::CuBLASLt,
+        check: |_arch, obs, derived| derived.tensor_core_dominance > 0.0 && obs.shared_mem_per_sm.value >= 64 * 1024,
+    },
+    LibraryCapability {
+        name: "supports_128b_global_ld",
+        description: "128-bit Global Loads: Vectorized loads (float4, int4) for optimal bandwidth. (Derived: Always True)",
+        intended_for: TargetLibrary::CuBLAS,
+        check: |_arch, _obs, _derived| true, // Basically true since Fermi, but we check CC > 30 previously
+    },
+    LibraryCapability {
+        name: "supports_ldmatrix_x4",
+        description: "ldmatrix.x4: Maximum throughput matrix load from shared memory. (Derived: Max Tile FP16 >= 128)",
+        intended_for: TargetLibrary::CuBLAS,
+        check: |_arch, _obs, derived| derived.max_tile_k_fp16 >= 128,
+    },
+    // ── Fusion & Epilogue ────────────────────────────────────────────────────
+    LibraryCapability {
+        name: "supports_tensor_epilogue_fusion",
+        description: "Epilogue Fusion: Ability to fuse Bias, ReLU, and GELU directly into GEMM. (Derived: High L2 Cache >= 4MB & Registers >= 64k)",
+        intended_for: TargetLibrary::CuBLASLt,
+        check: |_arch, obs, _derived| obs.l2_bytes.value >= 4 * 1024 * 1024 && obs.registers_per_sm.value >= 65536,
+    },
+    LibraryCapability {
+        name: "supports_gelu_poly_fastpath",
+        description: "GELU Polynomial Fastpath: Optimized hardware approximation for GELU activation. (Derived: TC Dominance > 5)",
+        intended_for: TargetLibrary::CuBLASLt,
+        check: |_arch, _obs, derived| derived.tensor_core_dominance > 5.0,
+    },
+    // ── Workspace & Autotuning Affordances ───────────────────────────────────
+    LibraryCapability {
+        name: "supports_large_smem_tiles",
+        description: "Large SMEM Tiling: Architecture supports/encourages >100KB shared memory tiles per block. (Derived: SMEM >= 96KB)",
+        intended_for: TargetLibrary::CuBLAS,
+        check: |_arch, obs, _derived| obs.shared_mem_per_sm.value >= 96 * 1024,
+    },
+    LibraryCapability {
+        name: "supports_high_register_pressure_kernels",
+        description: "High Register Pressure: Large register file supports complex, unrolled GEMM kernels. (Derived: Max Threads >= 1536)",
+        intended_for: TargetLibrary::CuBLAS,
+        // High register pressure kernels are typically used when you have plenty of threads to hide latency,
+        // Ampere and above provide 1536-2048 threads and allow larger register allocations per thread before spilling.
+        check: |_arch, obs, _derived| obs.max_threads_per_sm.value >= 1536,
+    },
+];
+
+/// Evaluates high-level library affordances for a given architecture.
+#[cfg(feature = "heuristics")]
+pub fn evaluate_library_capabilities(
+    arch: &crate::compute_cap::GpuArch,
+    obs: &crate::arch_metrics::ArchObservables,
+    derived: &crate::arch_metrics::DerivedProperties,
+) -> Vec<(&'static LibraryCapability, bool)> {
+    LIBRARY_CAPABILITIES
+        .iter()
+        .map(|cap| (cap, (cap.check)(arch, obs, derived)))
+        .collect()
 }
