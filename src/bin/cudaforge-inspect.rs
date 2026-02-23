@@ -252,7 +252,8 @@ fn print_capabilities(m: usize, n: usize, k: usize, dtype: cudaforge::DType, cal
     {
         let (obs, derived) = &obs_and_derived;
         let shape = cudaforge::ProblemShape { m, n, k };
-        let predictor = cudaforge::HardwarePredictor::evaluate(&arch, obs, derived, shape, dtype, None);
+        let predictor_engine = cudaforge::predictor::HardwarePredictor::new(arch.clone(), cudaforge::predictor::AnalyticalModel::default());
+        let predictor = predictor_engine.evaluate(shape, None).expect("Prediction failed");
 
         let status_line = if predictor.is_calibrated {
             "\x1b[1;32m├─ Execution Profile & Architectural Regime (CALIBRATED) ──┤\x1b[0m"

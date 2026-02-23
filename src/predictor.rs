@@ -6,6 +6,7 @@
 
 use crate::arch_metrics::{ArchObservables, DerivedProperties};
 use crate::compute_cap::GpuArch;
+use crate::error::Result;
 use serde::{Serialize, Deserialize};
 
 /// Affinity/likelihood of a hardware architecture favoring a specific kernel class.
@@ -118,9 +119,10 @@ pub struct NumericExecutionModes {
 // ── Phase 12 Multi-Arch Enums ──
 
 /// Classification of the compute pipeline's maturity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ComputePipeline {
     /// Standard CUDA core based scalar math.
+    #[default]
     ScalarCuda,
     /// Synchronous Tensor Core execution (Volta/Turing).
     TensorSync,
@@ -133,9 +135,10 @@ pub enum ComputePipeline {
 }
 
 /// Classification of the memory orchestration strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MemoryPipeline {
     /// No specialized memory pipeline.
+    #[default]
     None,
     /// Standard Shared Memory blocking (L1-managed).
     SmemBlocking,
@@ -148,9 +151,10 @@ pub enum MemoryPipeline {
 }
 
 /// Parallelism regime the architecture prefers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ParallelismRegime {
     /// Reliant on high occupancy to hide latency.
+    #[default]
     OccupancyBound,
     /// Mix of ILP and occupancy for latency hiding.
     LatencyHiding,
@@ -165,9 +169,10 @@ pub enum ParallelismRegime {
 }
 
 /// Numeric engine specialization level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum NumericEngineClass {
     /// Basic single-precision only.
+    #[default]
     Fp32Only,
     /// Mixed-precision scalar math (FP16/FP32).
     MixedScalar,
@@ -182,9 +187,10 @@ pub enum NumericEngineClass {
 }
 
 /// High-level architectural class representation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ExecutionArchClass {
     /// Pre-Tensor Core architectures (Pascal and older).
+    #[default]
     PreTensor,
     /// Early Tensor Core architectures (Volta, Turing).
     EarlyTensor,
@@ -209,7 +215,7 @@ impl std::fmt::Display for ExecutionArchClass {
 }
 
 /// High-level summary of the architecture's behavioral regime.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExecutionProfile {
     /// General architectural family category.
     pub arch_class: ExecutionArchClass,
@@ -291,9 +297,10 @@ pub struct ProblemShape {
 }
 
 /// Supported data types for kernel benchmarking and prediction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DType {
     /// 32-bit floating point.
+    #[default]
     Fp32,
     /// 16-bit floating point.
     Fp16,
@@ -317,7 +324,7 @@ impl DType {
 }
 
 /// Description of the hardware support for a specific data type.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct NumericFeasibility {
     /// The original data type requested by the user.
     pub requested_dtype: DType,
@@ -359,7 +366,7 @@ pub struct KernelPrediction {
 
 /// Comprehensive hardware cost model predictions.
 #[derive(Debug, Clone, Serialize)]
-pub struct HardwarePredictor {
+pub struct PredictorReport {
     /// The architecture compute capability base (e.g., 80) used for this prediction.
     pub arch_base_cc: u32,
     // ── Phase 12 Execution Profile ──
@@ -649,6 +656,180 @@ pub struct PerformanceSignature {
     pub entropy: KernelEntropy,
 }
 
+/// The formal latent microarchitectural state vector θ.
+///
+/// This represents the "unseen" parameters of the GPU's physics that we 
+/// attempt to infer from execution telemetry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LatentStateTheta {
+    /// Latent instruction issue rate intensity (λ_issue).
+    pub lambda_issue: f32,
+    /// Latent memory bandwidth utilization intensity (λ_mem).
+    pub lambda_mem: f32,
+    /// Latent pipeline stall probability intensity (λ_stall).
+    pub lambda_stall: f32,
+    /// Latent warp concurrency intensity (λ_warp).
+    pub lambda_warp: f32,
+}
+
+/// A trait for pluggable performance models.
+///
+/// This allows swapping between the analytical (physics-based) model,
+/// learned models (Bayesian), or hybrid approaches.
+pub trait ProbabilisticModel: Send + Sync {
+    /// Estimates the performance signature for a given problem shape and architecture.
+    fn estimate(
+        &self,
+        arch: &GpuArch,
+        obs: &ArchObservables,
+        derived: &DerivedProperties,
+        shape: &ProblemShape,
+        calib: &CalibrationState,
+    ) -> PerformanceSignature;
+
+    /// Updates the internal state based on empirical evidence (Bayesian Posterior Update).
+    fn update_posterior(&mut self, telemetry: &crate::telemetry::GpuEEGLog);
+}
+
+/// The default analytical performance model based on hardware physics.
+#[derive(Debug, Clone, Default)]
+pub struct AnalyticalModel;
+
+impl ProbabilisticModel for AnalyticalModel {
+    fn estimate(
+        &self,
+        arch: &GpuArch,
+        obs: &ArchObservables,
+        derived: &DerivedProperties,
+        shape: &ProblemShape,
+        calib: &CalibrationState,
+    ) -> PerformanceSignature {
+        estimate_performance_signature(arch, obs, derived, &ExecutionProfile::default(), shape, &NumericFeasibility::default(), calib)
+    }
+
+    fn update_posterior(&mut self, _telemetry: &crate::telemetry::GpuEEGLog) {
+        // Analytical model is static/heuristic in its pure form.
+        // Learning happens in the BayesianPredictor wrapper.
+    }
+}
+
+/// A Bayesian performance model that learns from execution telemetry.
+///
+/// It maintains a latent state θ representing the GPU's microarchitectural
+/// performance intensity, updated via Bayesian posterior inference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BayesianModel {
+    /// The current latent state mean (μ_θ).
+    pub theta: LatentStateTheta,
+    /// The uncertainty in the latent state (Σ_θ).
+    /// For simplicity in this implementation, we use a single variance scalar per parameter.
+    pub variance: LatentStateTheta,
+}
+
+impl Default for BayesianModel {
+    fn default() -> Self {
+        Self {
+            theta: LatentStateTheta {
+                lambda_issue: 1.0,
+                lambda_mem: 1.0,
+                lambda_stall: 0.1,
+                lambda_warp: 1.0,
+            },
+            variance: LatentStateTheta {
+                lambda_issue: 0.2,
+                lambda_mem: 0.2,
+                lambda_stall: 0.05,
+                lambda_warp: 0.2,
+            },
+        }
+    }
+}
+
+impl ProbabilisticModel for BayesianModel {
+    fn estimate(
+        &self,
+        arch: &GpuArch,
+        obs: &ArchObservables,
+        derived: &DerivedProperties,
+        shape: &ProblemShape,
+        calib: &CalibrationState,
+    ) -> PerformanceSignature {
+        // Here we would ideally sample from p(θ), but for the first iteration
+        // we use the expected value E[θ] = self.theta.
+        
+        // We inject the latent intensities into a modified analytical model
+        let mut sig = estimate_performance_signature(
+            arch, obs, derived, &ExecutionProfile::default(), shape, &NumericFeasibility::default(), calib
+        );
+        
+        // Adjust the analytical signature using latent intensities
+        sig.scheduler_model.issue_rate *= self.theta.lambda_issue;
+        sig.cache_model.dram_miss_rate *= self.theta.lambda_mem;
+        sig.uncertainty.epistemic_uncertainty = self.variance.lambda_issue.max(self.variance.lambda_mem);
+        
+        sig
+    }
+
+    fn update_posterior(&mut self, telemetry: &crate::telemetry::GpuEEGLog) {
+        // Implementation of: p(θ | D_new) ∝ p(D_new | θ) p(θ)
+        // We use a simplified Kalman-style update for the latent intensities.
+        
+        let learning_rate = 0.1; // Baseline learning rate (Kalman Gain proxy)
+        
+        // Likelihood of issue rate observation
+        let issue_error = telemetry.empirical_response.measured_issue_utilization - self.theta.lambda_issue;
+        self.theta.lambda_issue += learning_rate * issue_error;
+        self.variance.lambda_issue *= 1.0 - learning_rate; // Uncertainty decreases with data
+        
+        // Adjust based on divergence delta
+        let delta = telemetry.divergence_delta.runtime_ratio;
+        
+        // If delta > 1.0, we were too optimistic (measured > predicted)
+        if delta > 1.1 {
+            self.theta.lambda_issue *= 0.95;
+            self.theta.lambda_stall *= 1.05;
+        } else if delta < 0.9 {
+            // Too pessimistic (measured < predicted)
+            self.theta.lambda_issue *= 1.05;
+            self.theta.lambda_stall *= 0.95;
+        }
+    }
+}
+
+/// A high-level predictor that can evaluate kernel intents using a probabilistic model.
+#[derive(Debug, Clone)]
+pub struct HardwarePredictor<M: ProbabilisticModel = AnalyticalModel> {
+    /// The target GPU architecture.
+    pub arch: GpuArch,
+    /// The internal performance model used for estimations.
+    pub model: M,
+}
+
+impl<M: ProbabilisticModel> HardwarePredictor<M> {
+    /// Creates a new predictor instance with a specific model.
+    pub fn new(arch: GpuArch, model: M) -> Self {
+        Self { arch, model }
+    }
+
+    /// Evaluates a problem shape and generates a comprehensive prediction report.
+    pub fn evaluate(
+        &self,
+        shape: ProblemShape,
+        calibration: Option<CalibrationState>,
+    ) -> Result<PredictorReport> {
+        let obs = ArchObservables::from_compute_cap(self.arch.base);
+        let derived = DerivedProperties::from_observables(&obs);
+        let calib = calibration.unwrap_or_default();
+
+        let sig = self.model.estimate(&self.arch, &obs, &derived, &shape, &calib);
+        
+        let mut report = PredictorReport::evaluate(&self.arch, obs.clone(), derived.clone(), shape, DType::Fp32, Some(calib));
+        report.performance_signature = sig;
+        
+        Ok(report)
+    }
+}
+
 /// Empirical measurements returned by a hardware profiler (like Nsight Compute)
 /// to calibrate the oracle's internal physics models.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -783,12 +964,16 @@ pub struct VerificationTargets {
     pub expected_stall_reason: &'static str,
 }
 
-impl HardwarePredictor {
-    /// Evaluates the architecture to provide implementation predictions.
+
+
+impl PredictorReport {
+    /// Evaluates a problem shape and generates prescriptive implementation intents.
+    /// 
+    /// This is the primary entry point for a standard analytical prediction.
     pub fn evaluate(
         arch: &GpuArch,
-        obs: &ArchObservables,
-        derived: &DerivedProperties,
+        obs: ArchObservables,
+        derived: DerivedProperties,
         shape: ProblemShape,
         dtype: DType,
         calibration_state: Option<CalibrationState>,
@@ -1254,7 +1439,7 @@ impl HardwarePredictor {
             let s_persistent = {
                 let mut score = 2.0;
                 if obs.l2_bytes.value >= 16 * 1024 * 1024 { score += 3.0; }
-                if persistence_viable(arch, obs) { score += 1.0; }
+                if persistence_viable(arch, &obs) { score += 1.0; }
                 if is_small_m_n { score += 1.5; } // Fusion is great for removing bandwidth bounds on small shapes
                 score
             };
@@ -1283,15 +1468,15 @@ impl HardwarePredictor {
         likelihood_distribution.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
 
         let implementation_strategies: Vec<&'static str> = likelihood_distribution.iter().map(|p| p.strategy).collect();
-        let suggested_search_space = derive_search_space(arch, obs, &derived, &execution_profile);
+        let suggested_search_space = derive_search_space(arch, &obs, &derived, &execution_profile);
 
-        let shape_classification = classify_shape(obs, &shape);
+        let shape_classification = classify_shape(&obs, &shape);
         let state = calibration_state.unwrap_or_default();
         let is_calibrated = state.samples_absorbed > 0;
 
         let performance_signature = estimate_performance_signature(
             arch, 
-            obs, 
+            &obs, 
             &derived, 
             &execution_profile, 
             &shape,
@@ -1656,7 +1841,7 @@ fn estimate_performance_signature(
     arch: &GpuArch,
     obs: &ArchObservables,
     derived: &DerivedProperties,
-    profile: &ExecutionProfile,
+    _profile: &ExecutionProfile,
     shape: &ProblemShape,
     _feasibility: &NumericFeasibility,
     calib: &CalibrationState,
@@ -1699,24 +1884,32 @@ fn estimate_performance_signature(
     // Total scalar accesses for the entire GEMM (baseline without SMEM caches)
     let total_scalar_bytes = total_flops * bytes_per_elem; 
     
-    // L1/SMEM blocks most scalar accesses via tile reuse. Proxy tile dimension: 128
-    let tile_dim = 128.0_f64; 
-    let l1_miss_rate = (1.0 / tile_dim + 1.0 / tile_dim);
-    let l1_hit_rate = (1.0 - l1_miss_rate).clamp(0.0, 1.0) as f32;
+    // ── Phase 42: Generative Cache Hit Laws ──
+    // We replace empirical constants with sigmoid-based functions sensitive to geometry.
+    let arithmetic_intensity = (total_flops / total_bytes.max(1.0)) as f64;
+    
+    // Reuse density: Surface-to-volume ratio proxy 
+    // Small surface area (A+B) relative to volume (C) means higher potential reuse.
+    let surface_area = m * k + k * n;
+    let volume = m * n;
+    let reuse_density = (volume / surface_area.max(1.0)).log2(); // Log-scale density
+    
+    // Sigmoid hit rate for L1: sensitive to tile-level locality
+    let l1_logit = 0.5 * reuse_density + 0.1 * arithmetic_intensity - 2.0;
+    let l1_hit_rate = (1.0 / (1.0 + (-l1_logit).exp())).clamp(0.1, 0.98) as f32;
+    let l1_miss_rate = 1.0 - l1_hit_rate;
     
     // Global memory traffic (requested from L2 because it missed L1)
-    let global_traffic_bytes = total_scalar_bytes * l1_miss_rate;
+    let global_traffic_bytes = total_scalar_bytes * (l1_miss_rate as f64);
     
     // L2 hit rate: based on working set (min_dram_bytes) vs L2 capacity
     let l2_capacity = obs.l2_bytes.value as f64;
-    let working_set_bytes = min_dram_bytes; // Minimum unique data to load
+    let working_set_bytes = min_dram_bytes; 
     
     let l2_capacity_ratio = l2_capacity / working_set_bytes.max(1.0);
-    let l2_hit_rate = if l2_capacity_ratio >= 1.0 {
-        0.95 // Almost all hits except compulsory
-    } else {
-        (l2_capacity_ratio * 0.8).clamp(0.1, 0.95)
-    } as f32;
+    // Sigmoid hit rate for L2: sensitive to capacity pressure
+    let l2_logit = 4.0 * l2_capacity_ratio.log2() + 1.0;
+    let l2_hit_rate = (1.0 / (1.0 + (-l2_logit).exp())).clamp(0.05, 0.95) as f32;
     
     let dram_miss_rate = 1.0 - l2_hit_rate;
     
@@ -1731,6 +1924,7 @@ fn estimate_performance_signature(
         l2_traffic_bytes: global_traffic_bytes,
         dram_traffic_bytes,
     };
+
     
     // Calculate time taken traversing the pipelined cache hierarchy
     let l1_time_s = total_scalar_bytes / (peak_l1_bw * 1e9);
