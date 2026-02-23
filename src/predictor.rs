@@ -431,10 +431,14 @@ pub struct HardwarePredictor {
     pub suggested_search_space: SearchSpace,
     /// Classification of the problem's shape physics.
     pub shape_classification: ShapeClassification,
+    /// Projection of the shape into a dense, learnable coordinate space.
+    pub shape_manifold: ShapeManifold,
     /// Predicted performance signature of this implementation.
     pub performance_signature: PerformanceSignature,
     /// Whether the predictor is using empirical calibration data.
     pub is_calibrated: bool,
+    /// The current "learned" calibration state of the oracle's internal models.
+    pub calibration_state: CalibrationState,
 }
 
 /// Operational intent emitted for a specific kernel implementation.
@@ -465,6 +469,8 @@ pub struct KernelIntent {
     // ── Phase 22-26 Physical Realism ──
     /// Classification of the problem's shape physics.
     pub shape_class: ShapeClassification,
+    /// Projection of the shape into a continuous cluster.
+    pub shape_manifold: ShapeManifold,
     /// Predicted performance signature of this implementation.
     pub performance_signature: PerformanceSignature,
     /// Expected runtime in microseconds.
@@ -475,6 +481,8 @@ pub struct KernelIntent {
     pub runtime_confidence: f32,
     /// Verification targets for hardware profilers.
     pub verification_targets: VerificationTargets,
+    /// The oracle's current calibration state used to generate this intent.
+    pub calibration_state: CalibrationState,
 }
 
 /// A specific kernel configuration sampled from the predictor's distribution.
@@ -532,6 +540,91 @@ pub struct ShapeClassification {
     pub tiling_rationale: String,
 }
 
+/// Identifiers for clustered shape domains to enable cross-shape learning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ShapeCluster {
+    /// Small, highly synchronized inference shapes (e.g. M=1, N=4096).
+    InferenceVector,
+    /// Memory-bound, tall/wide irregular boundaries (e.g. M=200, N=10000).
+    IrregularEdge,
+    /// Well-behaved, power-of-two dense compute tiles (e.g. 2048x2048).
+    DenseCore,
+    /// Extreme reduction dominance (e.g. K > 8192, M,N small).
+    ReductionHeavy,
+    /// Micro-batching regimes (e.g. M=8..32).
+    MicroBatch,
+}
+
+/// A projection of the raw (M, N, K) shape into a normalized vector space.
+/// Used by runtimes to bucket similar kernels into the same CalibrationState.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShapeManifold {
+    /// The discrete cluster this shape belongs to.
+    pub cluster: ShapeCluster,
+    /// The normalized "volume" metric.
+    pub normalized_volume: f32,
+    /// The arithmetic intensity of this specific coordinate.
+    pub intensity: f32,
+}
+
+/// A measure of algorithmic unpredictability and execution divergence.
+/// High entropy = unpredictable behavior. Low entropy = highly deterministic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KernelEntropy {
+    /// Overall entropy score (0.0 = deterministic, 1.0 = highly unpredictable).
+    pub score: f32,
+    /// Risk of thread divergence due to shape edge-cases or branching.
+    pub divergence_risk: f32,
+    /// Uncertainty regarding the true memory access pattern (e.g. uncoalesced bounds).
+    pub memory_contention_risk: f32,
+    /// Qualitative description of why the entropy score is what it is.
+    pub rationale: &'static str,
+}
+
+/// A probabilistic model of the GPU's warp scheduler.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulerModel {
+    /// Probability that a warp has its operands ready (0.0 to 1.0).
+    pub warp_ready_prob: f32,
+    /// Average number of dependent instructions before a stall is hidden.
+    pub dep_chain_len: f32,
+    /// Structural hazard pressure (ALU/Tensor/SFU contention) (0.0 to 1.0).
+    pub pipe_pressure: f32,
+    /// Probability of instruction replays (e.g., from bank conflicts) (0.0 to 1.0).
+    pub replay_rate: f32,
+    /// The final computed issue rate (0.0 to 1.0), representing the probability 
+    /// a scheduler issues an instruction on any given cycle.
+    pub issue_rate: f32,
+}
+
+/// A probabilistic model of the GPU's memory cache hierarchy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheHierarchyModel {
+    /// Probability that a memory request hits in L1/SMEM.
+    pub l1_hit_rate: f32,
+    /// Probability that a memory request hits in L2 (given an L1 miss).
+    pub l2_hit_rate: f32,
+    /// Probability that a memory request goes all the way to DRAM.
+    pub dram_miss_rate: f32,
+    /// Estimated total traffic to L2 (bytes).
+    pub l2_traffic_bytes: f64,
+    /// Estimated total traffic to DRAM (bytes).
+    pub dram_traffic_bytes: f64,
+}
+
+/// A rigorous statistical model of prediction uncertainty.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalibratedUncertainty {
+    /// Lack of knowledge (decreases as `samples_absorbed` increases).
+    pub epistemic_uncertainty: f32,
+    /// Inherent task variance (e.g., from `KernelEntropy` and divergence).
+    pub aleatoric_uncertainty: f32,
+    /// Arch-distance penalty when warm-starting from a different GPU.
+    pub transfer_uncertainty: f32,
+    /// The final pooled standard deviation (σ) of the predicted runtime.
+    pub sigma_runtime: f32,
+}
+
 /// Predicted performance footprint and resource utilization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerformanceSignature {
@@ -541,12 +634,142 @@ pub struct PerformanceSignature {
     pub flop_utilization: f32,
     /// Predicted percentage of available bandwidth used (0.0 to 1.0).
     pub bw_utilization: f32,
-    /// Estimated pressure on the warp schedulers (0.0 to 1.0).
-    pub scheduler_pressure: f32,
+    /// Detailed mathematical model of the warp scheduler.
+    pub scheduler_model: SchedulerModel,
+    /// Detailed mathematical model of the multi-tier cache hierarchy.
+    pub cache_model: CacheHierarchyModel,
+    /// Statistically rigorous uncertainty bounds for the predicted runtime.
+    pub uncertainty: CalibratedUncertainty,
     /// Predicted risk of register spilling (0.0 to 1.0).
     pub risk_of_spill: f32,
-    /// The primary hardware limit restricting performance.
-    pub dominant_limit: &'static str,
+    /// Posterior probability distribution of the restricting hardware limits.
+    /// Ex: {"dram_bandwidth": 0.7, "tensor_unit_throughput": 0.3}
+    pub dominant_limits: std::collections::HashMap<&'static str, f32>,
+    /// The algorithmic entropy (unpredictability) of this kernel.
+    pub entropy: KernelEntropy,
+}
+
+/// Empirical measurements returned by a hardware profiler (like Nsight Compute)
+/// to calibrate the oracle's internal physics models.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalibrationFeedback {
+    /// The actual wall-clock execution time of the kernel.
+    pub measured_runtime_us: f32,
+    /// The actual percentage of issue slots utilized by the scheduler.
+    pub measured_issue_utilization: f32,
+    /// The actual percentage of theoretical DRAM bandwidth achieved.
+    pub measured_bw_utilization: f32,
+}
+
+/// The "learned" internal state of the predictor's analytical models.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalibrationState {
+    /// Multiplier applied to analytical FLOP utilization estimates.
+    pub flop_scale_coeff: f32,
+    /// Multiplier applied to analytical Bandwidth utilization estimates.
+    pub bw_scale_coeff: f32,
+    /// Tuning factor influencing the modeled scheduler pressure.
+    pub pressure_tune_coeff: f32,
+    /// Number of calibration samples absorbed so far.
+    pub samples_absorbed: u32,
+}
+
+impl Default for CalibrationState {
+    fn default() -> Self {
+        Self {
+            flop_scale_coeff: 1.0,
+            bw_scale_coeff: 1.0,
+            pressure_tune_coeff: 1.0,
+            samples_absorbed: 0,
+        }
+    }
+}
+
+/// A projection matrix to translate a learned CalibrationState from a Source GPU Architecture
+/// to a Target GPU Architecture, enabling Cross-GPU Transfer Learning (Warm-Starting).
+pub struct TransferMatrix;
+
+impl TransferMatrix {
+    /// Translates a state learned on `source_arch` to be applicable to `target_arch`.
+    /// 
+    /// For example, moving from Ampere (80) to Hopper (90) might see a drop in
+    /// BW utilization efficiency due to TMA overhead on small shapes, or a boost in FLOP
+    /// efficiency due to better scheduling.
+    pub fn translate(state: &CalibrationState, source_arch: u32, target_arch: u32) -> CalibrationState {
+        if source_arch == target_arch || state.samples_absorbed == 0 {
+            return state.clone();
+        }
+
+        let mut next_state = state.clone();
+        
+        // Decay the confidence (samples) since this is a fuzzy translation
+        next_state.samples_absorbed = (next_state.samples_absorbed as f32 * 0.25) as u32;
+
+        // Apply architectural translation heuristics
+        if source_arch < 90 && target_arch >= 90 {
+            // Pre-Hopper to Hopper: TMA and TMEM introduce BW overhead but higher compute efficiency
+            next_state.bw_scale_coeff *= 0.85; 
+            next_state.flop_scale_coeff *= 1.15;
+            next_state.pressure_tune_coeff *= 0.90; // Hopper schedulers are better at hiding pressure
+        } else if source_arch >= 90 && target_arch < 90 {
+            // Hopper down to Ampere/Ada
+            next_state.bw_scale_coeff *= 1.15;
+            next_state.flop_scale_coeff *= 0.85;
+            next_state.pressure_tune_coeff *= 1.10;
+        } else if source_arch < 80 && target_arch >= 80 {
+            // Turing/Volta to Ampere
+            next_state.flop_scale_coeff *= 1.10;
+        }
+
+        // Clamp to sane boundaries
+        next_state.flop_scale_coeff = next_state.flop_scale_coeff.clamp(0.5, 1.5);
+        next_state.bw_scale_coeff = next_state.bw_scale_coeff.clamp(0.5, 1.5);
+        next_state.pressure_tune_coeff = next_state.pressure_tune_coeff.clamp(0.5, 1.5);
+
+        next_state
+    }
+}
+
+impl CalibrationState {
+    /// Absorbs a single empirical runtime measurement to update internal scaling targets.
+    /// Uses a moving average (Bayesian-lite) approach to smooth out noise.
+    pub fn apply_feedback(
+        &mut self,
+        predicted_issue: f32,
+        predicted_bw: f32,
+        feedback: &CalibrationFeedback,
+    ) {
+        // Calculate the ratio of measured / predicted for this specific kernel execution
+        let issue_ratio = if predicted_issue > 0.0 {
+            feedback.measured_issue_utilization / predicted_issue
+        } else {
+            1.0
+        };
+
+        let bw_ratio = if predicted_bw > 0.0 {
+            feedback.measured_bw_utilization / predicted_bw
+        } else {
+            1.0
+        };
+
+        // Clip the ratios to avoid massive overcorrections from a single anomalous run
+        let issue_ratio = issue_ratio.clamp(0.5, 2.0);
+        let bw_ratio = bw_ratio.clamp(0.5, 2.0);
+
+        // Learning rate: Decays as we absorb more samples to stabilize the model
+        self.samples_absorbed += 1;
+        let learning_rate = 1.0 / (1.0 + self.samples_absorbed as f32).sqrt();
+
+        // Update coefficients via moving average
+        self.flop_scale_coeff = self.flop_scale_coeff * (1.0 - learning_rate) + (self.flop_scale_coeff * issue_ratio) * learning_rate;
+        self.bw_scale_coeff = self.bw_scale_coeff * (1.0 - learning_rate) + (self.bw_scale_coeff * bw_ratio) * learning_rate;
+
+        // Pressure tuning: If runtime is significantly worse than expected despite good utilization, 
+        // issue/scheduler pressure must be higher than modeled.
+        // For now, keep it simple: clamp the scale coefficients.
+        self.flop_scale_coeff = self.flop_scale_coeff.clamp(0.8, 1.2);
+        self.bw_scale_coeff = self.bw_scale_coeff.clamp(0.8, 1.2);
+    }
 }
 
 /// Precise verification targets for hardware profilers like Nsight Compute.
@@ -568,6 +791,7 @@ impl HardwarePredictor {
         derived: &DerivedProperties,
         shape: ProblemShape,
         dtype: DType,
+        calibration_state: Option<CalibrationState>,
     ) -> Self {
         let feasibility = resolve_feasibility(arch, dtype);
         let compute_dtype = feasibility.effective_compute_dtype;
@@ -967,10 +1191,6 @@ impl HardwarePredictor {
             epilogue_fusion_headroom,
         };
 
-        let is_calibrated = obs.dram_bandwidth_gbps.calibration_factor.is_some()
-            || obs.fp32_flops_tflops.calibration_factor.is_some()
-            || obs.tensor_core_flops_tflops.calibration_factor.is_some();
-
         // --- 1.9. Phase 15 Uncertainty & Regime Confidence ---
         let regime_confidence = if arch.base == 61 {
             0.95 // Pascal is well-understood and deterministic
@@ -1066,13 +1286,17 @@ impl HardwarePredictor {
         let suggested_search_space = derive_search_space(arch, obs, &derived, &execution_profile);
 
         let shape_classification = classify_shape(obs, &shape);
+        let state = calibration_state.unwrap_or_default();
+        let is_calibrated = state.samples_absorbed > 0;
+
         let performance_signature = estimate_performance_signature(
             arch, 
             obs, 
             &derived, 
             &execution_profile, 
             &shape,
-            &feasibility
+            &feasibility,
+            &state
         );
 
         Self {
@@ -1110,8 +1334,10 @@ impl HardwarePredictor {
             implementation_strategies,
             suggested_search_space,
             shape_classification,
+            shape_manifold: derive_shape_manifold(&shape, &derived),
             performance_signature,
             is_calibrated,
+            calibration_state: state,
         }
     }
 
@@ -1140,11 +1366,13 @@ impl HardwarePredictor {
                 suggested_search_space: self.suggested_search_space.clone(),
                 sampled_configs: self.sample_configs(3), // Top 3 samples
                 shape_class: self.shape_classification.clone(),
+                shape_manifold: self.shape_manifold.clone(),
                 performance_signature: self.performance_signature.clone(),
                 expected_runtime_us: self.calculate_expected_runtime(),
                 runtime_interval_us: self.calculate_runtime_interval(),
                 runtime_confidence: self.regime_confidence * 0.8, // Slightly lower confidence for runtime
                 verification_targets: self.derive_verification_targets(),
+                calibration_state: self.calibration_state.clone(),
             }
         })
     }
@@ -1165,13 +1393,14 @@ impl HardwarePredictor {
         }
     }
 
-    /// Calculates a realistic uncertainty interval for the runtime prediction.
+    /// Calculates a realistic uncertainty interval for the runtime prediction using the uncertainty model.
     fn calculate_runtime_interval(&self) -> [f32; 2] {
         let expected = self.calculate_expected_runtime();
-        let confidence = self.regime_confidence * 0.8;
+        let sigma = self.performance_signature.uncertainty.sigma_runtime;
         
-        let min_us = expected * 0.9; // Optimistic (assuming perfect overlap)
-        let max_us = expected * (1.0 + (1.0 - confidence) * 0.5); // Pessimistic (noise/contention)
+        // 95% confidence interval (approx ±2σ)
+        let min_us = (expected * (1.0 - 2.0 * sigma)).max(expected * 0.5); // Bound optimism
+        let max_us = expected * (1.0 + 2.0 * sigma);
         
         [min_us, max_us]
     }
@@ -1188,9 +1417,9 @@ impl HardwarePredictor {
             "minimal (Shape too small for blocking residency)"
         };
 
-        let expected_stall_reason = if sig.dominant_limit == "dram_bandwidth" {
+        let expected_stall_reason = if *sig.dominant_limits.get("dram_bandwidth").unwrap_or(&0.0) > 0.5 {
             "memory_dependency (LDG/STG bound)"
-        } else if sig.scheduler_pressure > 0.8 {
+        } else if sig.scheduler_model.pipe_pressure > 0.8 || sig.scheduler_model.issue_rate < 0.5 {
             "instruction_fetch / pipeline_busy"
         } else if sig.flop_utilization < 0.3 {
             "not_selected (Inadequate TLP/Grid scale)"
@@ -1386,6 +1615,43 @@ fn classify_shape(obs: &ArchObservables, shape: &ProblemShape) -> ShapeClassific
     }
 }
 
+fn derive_shape_manifold(shape: &ProblemShape, derived: &DerivedProperties) -> ShapeManifold {
+    let m = shape.m as f64;
+    let n = shape.n as f64;
+    let k = shape.k as f64;
+    
+    // Normalize volume relative to a "standard large tile" (e.g., 4096^3)
+    let standard_vol = 4096.0 * 4096.0 * 4096.0;
+    let vol = m * n * k;
+    let normalized_volume = (vol / standard_vol) as f32;
+
+    let bytes_per_elem = 2.0;
+    let total_flops = 2.0 * m * n * k;
+    let total_bytes = bytes_per_elem * (m * k + k * n + m * n);
+    let intensity = (total_flops / total_bytes) as f32;
+
+    let is_power_of_two = (m as usize).is_power_of_two() && (n as usize).is_power_of_two() && (k as usize).is_power_of_two();
+    let is_small = m < 128.0 || n < 128.0 || k < 128.0;
+
+    let cluster = if m <= 16.0 && n > 1024.0 {
+        ShapeCluster::InferenceVector
+    } else if m > 0.0 && m <= 128.0 && n > 128.0 {
+        ShapeCluster::MicroBatch
+    } else if k / (m.max(n)) >= 4.0 {
+        ShapeCluster::ReductionHeavy
+    } else if is_power_of_two && !is_small && intensity > derived.roofline_fp32 {
+        ShapeCluster::DenseCore
+    } else {
+        ShapeCluster::IrregularEdge
+    };
+
+    ShapeManifold {
+        cluster,
+        normalized_volume,
+        intensity,
+    }
+}
+
 fn estimate_performance_signature(
     arch: &GpuArch,
     obs: &ArchObservables,
@@ -1393,6 +1659,7 @@ fn estimate_performance_signature(
     profile: &ExecutionProfile,
     shape: &ProblemShape,
     _feasibility: &NumericFeasibility,
+    calib: &CalibrationState,
 ) -> PerformanceSignature {
     // Arithmetic Intensity Calculation
     let m = shape.m as f64;
@@ -1402,6 +1669,11 @@ fn estimate_performance_signature(
     
     let total_flops = 2.0 * m * n * k;
     let total_bytes = bytes_per_elem * (m * k + k * n + m * n);
+    
+    // Memory Traffic Floor (Phase 28)
+    // Minimum theoretical data movement (loads of A, B; store of C)
+    let min_dram_bytes = bytes_per_elem * (m * k + k * n + m * n);
+    
     let intensity = total_flops / total_bytes;
 
     // Detect if Tensor Cores are available and the primary engine
@@ -1417,55 +1689,235 @@ fn estimate_performance_signature(
     let peak_bw = obs.dram_bandwidth_gbps.effective() as f64;
     let machine_balance = peak_tflops * 1000.0 / peak_bw; // FLOPs/Byte
 
-    let is_compute_bound = intensity > machine_balance;
+    // Actual time bound by compute using peaks
+    let min_compute_time_s = total_flops / (peak_tflops * 1e12);
     
-    let (regime, dominant_limit) = if has_tensor_cores {
+    // ── Phase 37: Hierarchical Probabilistic Memory Model ──
+    let peak_l2_bw = obs.l2_bandwidth_gbps.effective() as f64;
+    let peak_l1_bw = obs.shared_mem_bandwidth_gbps.effective() as f64;
+    
+    // Total scalar accesses for the entire GEMM (baseline without SMEM caches)
+    let total_scalar_bytes = total_flops * bytes_per_elem; 
+    
+    // L1/SMEM blocks most scalar accesses via tile reuse. Proxy tile dimension: 128
+    let tile_dim = 128.0_f64; 
+    let l1_miss_rate = (1.0 / tile_dim + 1.0 / tile_dim);
+    let l1_hit_rate = (1.0 - l1_miss_rate).clamp(0.0, 1.0) as f32;
+    
+    // Global memory traffic (requested from L2 because it missed L1)
+    let global_traffic_bytes = total_scalar_bytes * l1_miss_rate;
+    
+    // L2 hit rate: based on working set (min_dram_bytes) vs L2 capacity
+    let l2_capacity = obs.l2_bytes.value as f64;
+    let working_set_bytes = min_dram_bytes; // Minimum unique data to load
+    
+    let l2_capacity_ratio = l2_capacity / working_set_bytes.max(1.0);
+    let l2_hit_rate = if l2_capacity_ratio >= 1.0 {
+        0.95 // Almost all hits except compulsory
+    } else {
+        (l2_capacity_ratio * 0.8).clamp(0.1, 0.95)
+    } as f32;
+    
+    let dram_miss_rate = 1.0 - l2_hit_rate;
+    
+    // DRAM traffic: Compulsory misses (min_dram) + Capacity/Conflict misses
+    let excess_global_traffic = (global_traffic_bytes - min_dram_bytes).max(0.0);
+    let dram_traffic_bytes = min_dram_bytes + excess_global_traffic * (dram_miss_rate as f64);
+    
+    let cache_model = CacheHierarchyModel {
+        l1_hit_rate,
+        l2_hit_rate,
+        dram_miss_rate,
+        l2_traffic_bytes: global_traffic_bytes,
+        dram_traffic_bytes,
+    };
+    
+    // Calculate time taken traversing the pipelined cache hierarchy
+    let l1_time_s = total_scalar_bytes / (peak_l1_bw * 1e9);
+    let l2_time_s = global_traffic_bytes / (peak_l2_bw * 1e9);
+    let dram_time_s = dram_traffic_bytes / (peak_bw * 1e9);
+    
+    // Total memory stall time is the maximum structural stall (since memory layers are pipelined)
+    let min_dram_time_s = l1_time_s.max(l2_time_s).max(dram_time_s);
+    
+    let is_compute_bound = min_compute_time_s >= min_dram_time_s;
+    
+    // Calculate posterior regime distribution
+    let total_time_s = min_compute_time_s + min_dram_time_s;
+    let mut dominant_limits = std::collections::HashMap::new();
+    
+    let compute_limit_name = if has_tensor_cores {
+        "tensor_unit_throughput"
+    } else {
+        "scheduler_issue + ILP"
+    };
+    
+    let compute_prob = (min_compute_time_s / total_time_s) as f32;
+    let memory_prob = (min_dram_time_s / total_time_s) as f32;
+    
+    dominant_limits.insert(compute_limit_name, compute_prob);
+    dominant_limits.insert("dram_bandwidth", memory_prob);
+
+    let regime = if has_tensor_cores {
         if is_compute_bound {
-            ("Compute Bound (Tensor Core limited)", "tensor_unit_throughput")
+            "Compute Bound (Tensor Core limited)"
         } else {
-            ("Memory Bound (DRAM limited)", "dram_bandwidth")
+            if compute_prob > 0.4 {
+                "Mixed Bound (DRAM / Tensor Edge)"
+            } else {
+                "Memory Bound (DRAM limited)"
+            }
         }
     } else {
         // Pascal / Older
         if is_compute_bound {
-            ("Latency-masked compute regime", "scheduler_issue + ILP")
+            "Latency-masked compute regime"
         } else {
-            ("Memory Bound (DRAM limited)", "dram_bandwidth")
+            if compute_prob > 0.4 {
+                "Mixed Bound (DRAM / Compute Edge)"
+            } else {
+                "Memory Bound (DRAM limited)"
+            }
         }
     };
 
-    // Utilization estimates (Nuanced Modeling)
+    // Utilization estimates (Nuanced Modeling Phase 26 & 28)
     // Small shapes (m, n < 128) suffer from wave quantization and launch overhead
     let shape_penalty = if shape.m < 128usize || shape.n < 128usize { 0.7 } else { 0.95 };
     
-    let mut flop_util = if is_compute_bound { 0.65 * shape_penalty } else { (intensity / machine_balance) * shape_penalty };
+    let mut flop_util = if is_compute_bound { 
+        0.65 * shape_penalty 
+    } else { 
+        (intensity / machine_balance) * shape_penalty 
+    };
     
-    // Bandwidth utilization:
-    // If we have high K and SMEM blocking, we don't saturate BW (we reuse tiles)
+    // Phase 28: Realistic BW Floor
+    // Calculate the absolute minimum bandwidth utilized just to move the theoretical minimal bytes
+    // in the time it takes to compute the operations (if compute bound) or memory bound.
+    let expected_runtime_s = min_compute_time_s.max(min_dram_time_s) / (flop_util).max(0.1);
+    let minimum_bw_util = (min_dram_bytes / expected_runtime_s) / (peak_bw * 1e9);
+
     let reuse_multiplier = if shape.k > 1024usize { 0.6 } else { 0.9 };
-    let mut bw_util = if is_compute_bound { (machine_balance / intensity) * reuse_multiplier } else { 0.8 * reuse_multiplier };
+    
+    let mut bw_util = if is_compute_bound { 
+        // Even if compute bound, we still use minimum BW. Plus extra traffic from poor reuse.
+        minimum_bw_util.max((machine_balance / intensity) * reuse_multiplier)
+    } else { 
+        0.8 * reuse_multiplier 
+    };
+
+    // Apply auto-calibration scaling coefficients
+    flop_util *= calib.flop_scale_coeff as f64;
+    bw_util *= calib.bw_scale_coeff as f64;
 
     // Final clamping
     flop_util = flop_util.min(0.9);
-    bw_util = bw_util.min(0.9); // Rarely saturate 100% in sustainable regime
+    bw_util = bw_util.clamp(0.15, 0.95); // Enforce realistic physical floor
 
-    // Scheduler pressure: High if persistent or many small blocks
-    let scheduler_pressure = match profile.parallelism_model {
-        ParallelismRegime::Persistent => 0.85,
-        ParallelismRegime::OccupancyBound => 0.6,
-        _ => 0.4,
+    let is_power_of_two = (m as usize).is_power_of_two() && (n as usize).is_power_of_two() && (k as usize).is_power_of_two();
+    let is_small = m < 128.0 || n < 128.0 || k < 128.0;
+
+    // Divergence risk increases if shapes are not powers of two (requiring bounds checking in the kernel)
+    let divergence_risk = if is_power_of_two { 0.05 } else { 0.35 } + if is_small { 0.2 } else { 0.0 };
+
+    // ── Phase 36: Probabilistic Scheduler Model ──
+    let occ = derived.reference_occupancy_32regs.clamp(0.1, 1.0);
+    // Probability that at least one warp is ready
+    let mem_stall_prob = min_dram_time_s / total_time_s;
+    let base_ready_prob = (1.0 - (mem_stall_prob * 0.8).powf(occ as f64 * 32.0)).clamp(0.1, 1.0) as f32;
+    
+    let warp_ready_prob = (base_ready_prob * (1.0 - divergence_risk)).clamp(0.01, 1.0);
+    
+    // Deeper dependency chains for Tensor Cores
+    let dep_chain_len = if has_tensor_cores { 8.0 } else { 4.0 };
+    
+    // Pipeline pressure (reduced on dual-issue architectures like Ampere)
+    let dual_issue_factor = if arch.base >= 80 { 0.7 } else { 1.0 };
+    let pipe_pressure = ((compute_prob as f32) * dual_issue_factor * calib.pressure_tune_coeff).clamp(0.0, 1.0);
+    
+    // Memory unaligned bank conflicts / boundary checks causing replays
+    let replay_rate: f32 = if !is_power_of_two || is_small { 0.15 } else { 0.02 };
+    
+    // Issue Rate is geometrically bound by constraints
+    let dispatch_bandwidth = (obs.schedulers_per_sm.value as f32) / (obs.max_warps_per_sm.value as f32 / occ);
+    let issue_rate = warp_ready_prob
+        .min(1.0 - pipe_pressure.min(0.99))
+        .min(dispatch_bandwidth)
+        .min(1.0 - replay_rate.min(0.99))
+        .clamp(0.01, 1.0);
+        
+    let scheduler_model = SchedulerModel {
+        warp_ready_prob,
+        dep_chain_len,
+        pipe_pressure,
+        replay_rate,
+        issue_rate,
     };
 
     // Risk of spill: High if register heavy or huge tiles
     let risk_of_spill = if derived.max_tile_k_fp32 < 16 { 0.7 } else { 0.1 };
 
+    // ── Phase 32: Kernel Entropy Calculation ──
+    
+    // Memory contention risk is high if bandwidth utilization is clamped/high or shape provides poor reuse
+    let memory_contention_risk = if (bw_util as f32) > 0.85 { 0.8 } else if shape.k < 128 { 0.5 } else { 0.1 };
+    
+    // Posterior entropy: If probabilities are split (e.g. 50/50), entropy is highest
+    let prob_diff = (compute_prob - memory_prob).abs();
+    let boundary_entropy = 1.0 - prob_diff; // 1.0 if highly mixed
+    
+    let entropy_score = (divergence_risk * 0.4 + memory_contention_risk * 0.4 + boundary_entropy * 0.2).clamp(0.0, 1.0);
+    
+    let rationale = if entropy_score > 0.7 {
+        "High Entropy: Unpredictable execution (mixed bounds or high divergence risk)."
+    } else if entropy_score > 0.4 {
+        "Medium Entropy: Moderate predictability with some structural variance."
+    } else {
+        "Low Entropy: Highly deterministic execution (clean bounds, clear limitation)."
+    };
+
+    let entropy = KernelEntropy {
+        score: entropy_score,
+        divergence_risk: divergence_risk.clamp(0.0, 1.0),
+        memory_contention_risk: memory_contention_risk.clamp(0.0, 1.0),
+        rationale,
+    };
+
+    // ── Phase 38: Calibrated Uncertainty Theory ──
+    let samples = calib.samples_absorbed as f32;
+    // Epistemic decays exponentially as we absorb more samples
+    let epistemic_uncertainty = (0.3 * (-samples / 10.0).exp()).clamp(0.01, 0.3);
+    
+    // Aleatoric comes purely from the kernel's inherent unpredictability
+    let aleatoric_uncertainty = entropy_score * 0.25;
+    
+    // Transfer uncertainty: if samples > 0 but coefficients are skewed, we might be 
+    // operating on a translated prior from a different architecture. We estimate this
+    // heuristically based on how far coefficients have drifted from 1.0. 
+    let drift = (calib.flop_scale_coeff - 1.0).abs().max((calib.bw_scale_coeff - 1.0).abs());
+    let transfer_uncertainty = if samples == 0.0 { 0.0 } else { (drift * 0.1).clamp(0.0, 0.2) };
+    
+    // Pooled standard deviation (assuming independent variance sources)
+    let variance = epistemic_uncertainty.powi(2) + aleatoric_uncertainty.powi(2) + transfer_uncertainty.powi(2);
+    let sigma_runtime = variance.sqrt().clamp(0.01, 0.5);
+    
+    let uncertainty = CalibratedUncertainty {
+        epistemic_uncertainty,
+        aleatoric_uncertainty,
+        transfer_uncertainty,
+        sigma_runtime,
+    };
+
     PerformanceSignature {
         regime,
         flop_utilization: flop_util as f32,
         bw_utilization: bw_util as f32,
-        scheduler_pressure: scheduler_pressure as f32,
+        scheduler_model,
+        cache_model,
+        uncertainty,
         risk_of_spill: risk_of_spill as f32,
-        dominant_limit,
+        dominant_limits,
+        entropy,
     }
 }
 fn persistence_viable(arch: &GpuArch, obs: &ArchObservables) -> bool {

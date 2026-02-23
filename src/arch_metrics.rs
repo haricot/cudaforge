@@ -26,11 +26,12 @@
 //! - [`ModelType::Heuristic`] — rule of thumb, use with caution
 
 use crate::compute_cap::GpuArch;
+use serde::{Deserialize, Serialize};
 
 // ── Layer 1: Provenance ──────────────────────────────────────────────────────
 
 /// Source of a measurement or data point.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DataSource {
     /// From NVIDIA architecture whitepaper or tuning guide
     NvidiaSpec,
@@ -85,7 +86,7 @@ pub struct CalibrationFact {
 }
 
 /// A value annotated with its provenance and optional calibration factor.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Measured<T> {
     /// The measured value
     pub value: T,
@@ -150,7 +151,7 @@ impl Measured<f32> {
 ///
 /// For precise per-SKU data, override these values via [`Measured::from_runtime`]
 /// or [`Measured::from_user`] with actual device queries.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArchObservables {
     /// Human-readable name of the flagship GPU these numbers come from.
     /// This is NOT an architectural property — it identifies the specific SKU
@@ -655,7 +656,7 @@ pub fn max_tile_elements(obs: &ArchObservables, bytes_per_element: u32) -> u32 {
 ///
 /// Unlike heuristic scores, every field here is computed from a named model
 /// function with explicit assumptions. See each model's documentation for details.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DerivedProperties {
     /// Reference occupancy at 32 registers/thread (conventional baseline, not invariant).
     /// From [`theoretical_occupancy_limit`] with `regs_per_thread = 32`.

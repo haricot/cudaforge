@@ -252,7 +252,7 @@ fn print_capabilities(m: usize, n: usize, k: usize, dtype: cudaforge::DType, cal
     {
         let (obs, derived) = &obs_and_derived;
         let shape = cudaforge::ProblemShape { m, n, k };
-        let predictor = cudaforge::HardwarePredictor::evaluate(&arch, obs, derived, shape, dtype);
+        let predictor = cudaforge::HardwarePredictor::evaluate(&arch, obs, derived, shape, dtype, None);
 
         let status_line = if predictor.is_calibrated {
             "\x1b[1;32m├─ Execution Profile & Architectural Regime (CALIBRATED) ──┤\x1b[0m"
@@ -261,11 +261,14 @@ fn print_capabilities(m: usize, n: usize, k: usize, dtype: cudaforge::DType, cal
         };
         
         if json_mode {
+            let mut output = serde_json::Map::new();
             if let Some(intent) = predictor.emit_intent() {
-                if let Ok(json) = serde_json::to_string_pretty(&intent) {
-                    println!("{}", json);
-                }
+                output.insert("kernel_intent".to_string(), serde_json::to_value(intent).unwrap());
             }
+            output.insert("hardware_caps".to_string(), serde_json::to_value(&hw_results).unwrap());
+            output.insert("observables".to_string(), serde_json::to_value(obs).unwrap());
+            output.insert("derived".to_string(), serde_json::to_value(derived).unwrap());
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
             return;
         }
 
@@ -389,6 +392,36 @@ fn print_capabilities(m: usize, n: usize, k: usize, dtype: cudaforge::DType, cal
         println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}%-{}%", "Estimated occupancy window:", predictor.achievable_occupancy_range.0, predictor.achievable_occupancy_range.1);
         println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Latency hiding sufficiency:", predictor.latency_hiding_sufficiency);
 
+        println!("  \x1b[1;32m├─ Scheduler Model Predictions ─────────────────────────┤\x1b[0m");
+        if let Some(intent) = predictor.emit_intent() {
+            let smrm = intent.performance_signature.scheduler_model;
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1}%", "Warp Ready Probability:", smrm.warp_ready_prob * 100.0);
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1}", "Avg Dependency Chain (cycles):", smrm.dep_chain_len);
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1}%", "Pipeline Pressure (Structural Hazards):", smrm.pipe_pressure * 100.0);
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1}%", "Replay Rate (Bank conflicts/divergence):", smrm.replay_rate * 100.0);
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m \x1b[1;32m{:.1}%\x1b[0m", "Predicted Issue Rate:", smrm.issue_rate * 100.0);
+        }
+
+        println!("  \x1b[1;32m├─ Memory Hierarchy Probabilities ──────────────────────┤\x1b[0m");
+        if let Some(intent) = predictor.emit_intent() {
+            let cache = intent.performance_signature.cache_model;
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1}%", "P(Hit L1 | Access):", cache.l1_hit_rate * 100.0);
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1}%", "P(Hit L2 | Miss L1):", cache.l2_hit_rate * 100.0);
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m \x1b[1;31m{:.1}%\x1b[0m", "P(Miss DRAM Cascade):", cache.dram_miss_rate * 100.0);
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.2} GB", "Total L2 Traffic:", cache.l2_traffic_bytes / 1e9);
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.2} GB", "Total DRAM Traffic:", cache.dram_traffic_bytes / 1e9);
+        }
+
+        println!("  \x1b[1;32m├─ Calibrated Uncertainty Theory ───────────────────────┤\x1b[0m");
+        if let Some(intent) = predictor.emit_intent() {
+            let u = intent.performance_signature.uncertainty;
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.3} (Lack of calibration)", "Epistemic Uncertainty:", u.epistemic_uncertainty);
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.3} (Inherent task variance)", "Aleatoric Uncertainty:", u.aleatoric_uncertainty);
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.3} (Cross-GPU drift)", "Transfer Uncertainty:", u.transfer_uncertainty);
+            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m \x1b[35m{:.1}%\x1b[0m", "σ Runtime (Pooled StdDev):", u.sigma_runtime * 100.0);
+        }
+
+        println!("  \x1b[1;32m├─ Implementation Strategies ───────────────────────────┤\x1b[0m");
         for likelihood in predictor.likelihood_distribution.iter() {
             println!("  \x1b[1;32m│\x1b[0m [\x1b[1;32m{:>5.1}%\x1b[0m] {}", likelihood.probability * 100.0, likelihood.strategy);
             println!("  \x1b[1;32m│\x1b[0m         \x1b[90m↳ uncertainty: \x1b[33m{:.2}\x1b[0m | regime_conf: \x1b[33m{:.2}\x1b[0m | \x1b[90m{}\x1b[0m", likelihood.uncertainty, predictor.regime_confidence, likelihood.reasoning);

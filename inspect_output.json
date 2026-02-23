@@ -1,0 +1,211 @@
+
+  [1;36m╔══ CUDA Capability Report ═══════════════════════════════╗[0m
+  [1;36m║[0m  GPU Compute Capability: [1;33mCC 61[0m | CUDA 12.9        [1;36m║[0m
+  [1;36m║[0m  Toolkit:  (/opt/cuda129/bin/nvcc)                 [1;36m║[0m
+  [1;36m╚════════════════════════════════════════════════════════╝[0m
+
+  [1;32m┌─ Hardware (CC) ─────────────────────────────────────────┐[0m
+  [1;32m│[0m [32m ✓ has_unified_memory            [0m Unified Memory: Basic cudaMallocManaged support — single address space accessible by both CPU and GPU. (CC 3.0+)
+  [1;32m│[0m [32m ✓ has_dynamic_parallelism       [0m Dynamic Parallelism: Launch kernels from within GPU kernels (nested kernel launch). Enables recursive algorithms on GPU. (CC 3.5+)
+  [1;32m│[0m [32m ✓ has_memory_pools              [0m CUDA Memory Pools: Efficient stream-ordered memory allocation/deallocation via cudaMallocAsync/cudaFreeAsync, reducing allocation overhead. (CUDA 11.2+ runtime, CC 3.5+)
+  [1;32m│[0m [32m ✓ has_warp_shuffle              [0m Warp Shuffle (__shfl_sync): Direct data exchange between threads in a warp. Avoids shared memory for thread-sync within 32 threads. (CC 3.0+)
+  [1;32m│[0m [32m ✓ has_f16                       [0m FP16 (half precision): 16-bit float, half the size of f32. Enables faster inference on memory-bound workloads. Available since Maxwell (CC 5.3).
+  [1;32m│[0m [90m · has_half2_native              [0m half2 native: Packed FP16 arithmetic — two FP16 ops in a single instruction, doubling throughput. Only on GP100 (6.0), GP10B (6.2), and Volta+ (7.0+).
+  [1;32m│[0m [32m ✓ has_pageable_memory_access    [0m Pageable memory access: Page Migration Engine — GPU can on-demand page-fault system memory without explicit pinning. Distinct from basic Unified Memory (CC 3.0+). (CC 6.0+)
+  [1;32m│[0m [32m ✓ has_cooperative_groups        [0m Cooperative Groups: Grid-wide synchronization via cooperative_groups::grid_group and cooperative kernel launch. Enables inter-block sync. (CC 6.0+)
+  [1;32m│[0m [32m ✓ has_int8                      [0m INT8 arithmetic: Generic 8-bit integer support via DP4A (dot product) or Tensor Cores. (CC 6.1+)
+  [1;32m│[0m [32m ✓ has_dp4a                      [0m DP4A: Dot Product of 4x8-bit integers accumulated into 32-bit. (CC 6.1+)
+  [1;32m│[0m [90m · has_int4                      [0m INT4 compute: 4-bit integer operations, primarily via Tensor Cores. (CC 7.5+)
+  [1;32m│[0m [90m · has_shared_mem_optin          [0m Shared Memory Opt-in: Support for requesting more than 48KB of shared memory via cudaFuncSetAttribute. (CC 7.0+)
+  [1;32m│[0m [90m · has_unified_l1_shared         [0m Unified L1/Shared Memory: Hardware-level unification of L1 cache and shared memory, allowing configurable splits. (CC 7.0+)
+  [1;32m│[0m [90m · has_relaxed_memory_ordering   [0m Relaxed Memory Ordering: Hardware support for more efficient relaxed memory consistency models. (CC 7.0+)
+  [1;32m│[0m [90m · has_wmma                      [0m WMMA (Warp Matrix Multiply-Accumulate): First-gen Tensor Core API. 16x16x16 matrix ops in hardware. The foundation of fast GEMM. (CC 7.0+)
+  [1;32m│[0m [90m · has_wmma_f16                  [0m WMMA FP16: Tensor Core matrix multiply with FP16 inputs/outputs. (CC 7.0+)
+  [1;32m│[0m [90m · has_independent_thread_scheduling[0m Independent thread scheduling: Each thread has its own program counter. Enables fine-grained synchronization & divergent warp execution. (CC 7.0+)
+  [1;32m│[0m [90m · has_int8_tensor_cores         [0m INT8 Tensor Cores: Hardware wmma instructions for INT8 matrices (m16n8k32/etc.). High throughput for W8A8 quantized inference. (CC 7.5+)
+  [1;32m│[0m [90m · has_int4_tensor_cores         [0m INT4 Tensor Cores: Hardware wmma instructions for INT4 matrices. Extremely high throughput for W4A16 or W4A4 setups. (CC 7.5+)
+  [1;32m│[0m [90m · has_ldmatrix                  [0m ldmatrix: Instruction to load data directly from Shared Memory to Tensor Core registers. Crucial for custom MMA kernels. (CC 7.5+)
+  [1;32m│[0m [90m · has_bf16_conversions          [0m BF16 conversions: Hardware-accelerated FP32↔BF16 conversion instructions (__float2bfloat16 etc.). (CC 8.0+, Ampere)
+  [1;32m│[0m [90m · has_large_l2                  [0m Large L2 cache: Significantly larger L2 cache (up to 40MB+) which affects tiling and data reuse patterns. (CC 8.0+)
+  [1;32m│[0m [90m · has_dual_issue_fp32_int       [0m Dual-issue FP32+INT: Ability to execute FP32 and INT32 instructions simultaneously in the same SM. (CC 8.0+)
+  [1;32m│[0m [90m · has_sparse_tensor_cores       [0m Sparse Tensor Cores: 2:4 structured sparsity — prune 50% of weights and get ~2x speedup on matrix ops with no accuracy loss. (CC 8.0+)
+  [1;32m│[0m [90m · has_wmma_bf16                 [0m WMMA BF16: Tensor Core matrix multiply with BF16 inputs. BF16 has the same exponent range as FP32 (better stability than FP16). (CC 8.0+)
+  [1;32m│[0m [90m · has_bf16                      [0m BF16 native: Full BF16 arithmetic support (add, mul, fma). (CC 8.0+)
+  [1;32m│[0m [90m · has_tf32                      [0m TF32 (TensorFloat-32): 19-bit format (8-bit exp + 10-bit mantissa + sign). Transparent FP32→TF32 on Tensor Cores, ~8x faster than FP32. (CC 8.0+)
+  [1;32m│[0m [90m · has_tf32_tensor_cores         [0m TF32 Tensor Cores: Hardware-accelerated TF32 matrix operations on Tensor Cores. (CC 8.0+)
+  [1;32m│[0m [90m · has_async_copy                [0m Async copy: memcpy_async from global to shared memory without blocking the compute pipeline. Key enabler for software pipelining. (CC 8.0+)
+  [1;32m│[0m [90m · has_l2_cache_persistence      [0m L2 cache persistence: Pin frequently accessed data (e.g. KV cache) in L2. Reduces DRAM bandwidth pressure during inference. (CC 8.0+)
+  [1;32m│[0m [90m · has_mbarrier                  [0m mbarrier: Hardware-assisted asynchronous barriers. Threads can continue working while waiting for async copies to land. Required for Warp Specialization (producer/consumer kernel patterns). (CC 8.0+)
+  [1;32m│[0m [90m · has_mma_f64                   [0m DMMA (Double-precision MMA): Tensor Core FP64 matrix multiply-accumulate. High-throughput FP64 GEMM for HPC workloads. (CC 8.0+)
+  [1;32m│[0m [90m · has_redux                     [0m redux.sync: Hardware warp-level reduction instruction (sum, min, max). Avoids manual shuffle-based reductions. (CC 8.0+)
+  [1;32m│[0m [90m · has_global_red_async          [0m Asynchronous Global Reduction: `red.async.global` instruction for asynchronous reduction in global memory. (CC 8.0+)
+  [1;32m│[0m [90m · has_fp8                       [0m FP8 data types: __nv_fp8_e4m3 and __nv_fp8_e5m2 storage types and conversion instructions. Enables FP8 quantized storage and data movement. (CC 8.9+, Ada/Hopper)
+  [1;32m│[0m [90m · has_fp8_tensor_cores          [0m FP8 Tensor Cores: Native 8-bit float matrix operations. ~2x throughput vs FP16 with minimal accuracy loss. (CC 8.9+, Ada/Hopper)
+  [1;32m│[0m [90m · has_wgmma                     [0m WGMMA (Warp Group MMA): Asynchronous matrix multiply-accumulate instruction operating on 128 threads simultaneously for massive GEMM throughput. (CC 9.0+)
+  [1;32m│[0m [90m · has_tma                       [0m TMA (Tensor Memory Accelerator): DMA engine that moves N-dimensional tiles between global↔shared memory. Zero CUDA cores used. (CC 9.0+)
+  [1;32m│[0m [90m · has_clusters                  [0m Thread Block Clusters: Group blocks that can cooperate via distributed shared memory. Enables cross-block synchronization. (CC 9.0+)
+  [1;32m│[0m [90m · has_cluster_barrier           [0m Cluster Barrier: Hardware-assisted asynchronous barriers across a thread block cluster. (CC 9.0+)
+  [1;32m│[0m [90m · has_distributed_shared_memory [0m Distributed Shared Memory: Blocks within a cluster can directly load/store from each other's shared memory. Ideal for wide attention heads. (CC 9.0+)
+  [1;32m│[0m [90m · has_l2_multicast              [0m L2 multicast: Broadcast data from L2 cache to multiple SMs simultaneously. Eliminates redundant DRAM reads when broadcasting model weights. (CC 9.0+)
+  [1;32m│[0m [90m · has_confidential_computing    [0m Confidential Computing: Hardware-enforced memory encryption (AES) on VRAM and PCIe bus. Data remains encrypted even during GPU processing. (CC 9.0+)
+  [1;32m│[0m [90m · has_wgmma                     [0m WGMMA (Warp Group MMA): Asynchronous matrix multiply-accumulate instruction operating on 128 threads simultaneously for massive GEMM throughput. (CC 9.0+)
+  [1;32m│[0m [90m · has_stmatrix                  [0m stmatrix: Hardware instruction to store data directly from Tensor Core registers back to Shared Memory seamlessly. (CC 9.0+)
+  [1;32m│[0m [90m · has_elect_one                 [0m elect.sync: Single-thread election instruction — exactly one thread per warp is elected without branching. Enables efficient warp-specialization patterns. (CC 9.0+)
+  [1;32m│[0m [90m · has_setmaxnreg                [0m setmaxnreg: Dynamic register budget control per warp. Enables producer/consumer warp specialization with asymmetric register allocation. (CC 9.0+)
+  [1;32m│[0m [90m · has_tensor_core_async_pipeline[0m Async Tensor Core Pipeline: Hardware support for asynchronous matrix operations on Tensor Cores. (CC 9.0+)
+  [1;32m│[0m [90m · has_fp8_wgmma                 [0m FP8 WGMMA: Asynchronous matrix multiplication for FP8 formats using the Warp Group MMA pipeline. (CC 9.0+)
+  [1;32m│[0m [90m · has_fp64_tensor_accum         [0m FP64 Tensor Accumulation: Hopper-specific ability to accumulate FP16 matrix operations into FP64. (CC 9.0+)
+  [1;32m│[0m [90m · has_sparse_tensor_cores_v2    [0m Sparse Tensor Cores v2: Enhanced structured sparsity support on Hopper architectures. (CC 9.0+)
+  [1;32m│[0m [90m · has_fp4                       [0m NVFP4: NVIDIA's native 4-bit float format. Requires strict per-tensor or per-group scaling. Doubles throughput vs FP8. (CC 10.0+)
+  [1;32m│[0m [90m · has_mxfp4                     [0m MXFP4 (OCP Microscaling): Standardized 4-bit format from the Open Compute Project. Uses micro-scaling with per-group (16/32 elements) scale factors. (CC 10.0+)
+  [1;32m│[0m [90m · has_mxfp6                     [0m MXFP6 (OCP Microscaling): Standardized 6-bit format. Balances precision between MXFP4 and MXFP8, with per-group micro-scaling factors. (CC 10.0+)
+  [1;32m│[0m [90m · has_microscaling              [0m Microscaling: General support for the MX format family (MXFP4, MXFP6, MXFP8, MXINT8). Enables per-group scale factors shared across 16/32 elements. (CC 10.0+)
+  [1;32m│[0m [90m · has_tmem                      [0m TMEM (Tensor Memory): Dedicated on-chip memory directly coupled to Tensor Cores. Replaces register file (RF) usage for TC operands. (CC 10.0+)
+  [1;32m│[0m [90m · has_dynamic_sparsity          [0m Dynamic Sparsity: Extends the 2:4 structured sparsity (Ampere) with data-dependent sparsity rates that vary per format (FP4/FP8). (CC 10.0+)
+  [1;32m│[0m [90m · has_tma_v2                    [0m TMA v2: Enhanced Tensor Memory Accelerator with queuing & async scheduling primitives not available on CC 120. (CC == 100)
+  [1;32m│[0m [90m · has_cluster_multicast         [0m Cluster Multicast: HW-accelerated broadcast from global memory to shared memory across all blocks in a cluster. Available on B200, but REMOVED from RTX 5090. (CC == 100)
+  [1;32m│[0m [90m · has_hw_allreduce              [0m HW All-Reduce: Hardware-accelerated multi-GPU reduction without using compute cores. Crucial for Tensor Parallelism across 8+ GPUs. (CC == 100)
+  [1;32m│[0m [90m · has_tma_indirect              [0m TMA Indirect: Scatter/gather via TMA — the accelerator can follow pointers to load non-contiguous data tiles. (CC == 100)
+  [1;32m│[0m [90m · is_data_center_gpu            [0m Data center GPU: Distinguishes CC 100 (B200/B100), CC 90 (H100), and CC 70 (V100) from consumer parts. Guards kernels relying on advanced inter-GPU communication. (CC 70, 90, or 100)
+  [1;32m│[0m [90m · has_amp                       [0m AMP (AI Management Processor): Dedicated HW scheduler for AI workloads on consumer Blackwell. Manages AI task queuing independently of the CPU. (CC 12.0+)
+  [1;32m│[0m [90m · allow_legacy_fp16             [0m Enables FP16 emulation/fallback via FP32 for architectures with limited FP16 throughput (CC 5.3 - 6.x).
+  [1;32m│[0m [90m · allow_legacy_bf16             [0m Enables BF16 emulation/fallback via FP32 for architectures without native BF16 arithmetic (CC 5.3 - 7.x).
+  [1;32m│[0m [90m · allow_legacy_fp8              [0m Enables FP8 emulation/fallback via FP16/FP32 for architectures without native FP8 support (CC 5.3 - 8.6).
+  [1;32m├─ Toolkit (CUDA 12.9) ──────────────────────────────────┤[0m
+  [1;32m│[0m [32m ✓ has_nvrtc                     [0m NVRTC: Runtime compilation of CUDA C++ to PTX. (CUDA 7.0+)
+  [1;32m│[0m [32m ✓ has_p2p_copy                  [0m Peer-to-Peer copy: Direct GPU-to-GPU memory transfers. (CUDA 4.0+, CC 3.0+)
+  [1;32m│[0m [32m ✓ has_cooperative_launch        [0m Cooperative Launch: cudaLaunchCooperativeKernel API for grid-wide synchronization. (CUDA 9.0+, CC 6.0+)
+  [1;32m│[0m [32m ✓ has_cuda_graphs               [0m CUDA Graphs: Capture a sequence of GPU operations and replay them with minimal CPU overhead. (CUDA 10.0+, CC 3.0+)
+  [1;32m│[0m [32m ✓ has_stream_capture_v2         [0m Stream Capture v2: Enhanced stream-to-graph capture API with improved handling of dependencies and performance. (CUDA 11.0+)
+  [1;32m│[0m [32m ✓ has_memory_pools              [0m CUDA Memory Pools: Stream-ordered allocation via cudaMallocAsync/cudaFreeAsync. Reduces allocation overhead. (CUDA 11.2+, CC 3.5+)
+  [1;32m│[0m [90m · has_cusparselt                [0m cuSPARSELt: Library for structured sparsity (2:4) on Tensor Cores. (CUDA 11.2+, CC 8.0+)
+  [1;32m│[0m [32m ✓ has_nvjitlink                 [0m NVJitLink: Runtime PTX JIT link-time library for linking PTX and objects into a executable. (CUDA 11.4+)
+  [1;32m│[0m [32m ✓ has_cuda_graph_updates        [0m CUDA Graph Updates: Support for updating/reconfiguring graph nodes without full reconstruction. (CUDA 11.4+)
+  [1;32m│[0m [90m · has_transformer_engine        [0m Transformer Engine: Automatic FP8 mixed-precision with dynamic scaling. (CUDA 11.8+, CC 8.9+)
+  [1;32m│[0m [32m ✓ has_cuda12_features           [0m CUDA 12 Features: New APIs including cudaGraphInstantiateWithParams, improved driver API, green contexts. (CUDA 12.0+)
+  [1;32m├─ Toolkit (CUBLAS) ───────────────────────────────────┤[0m
+  [1;32m│[0m [90m · has_fp64_tensorop             [0m FP64 Tensor Cores: Double-precision matrix operations for HPC. (Derived: FP64 TFLOPS > 0 & CC 8.0+)
+  [1;32m│[0m [90m · tensorop_accum_fp32           [0m Tensor Core FP32 Accumulation: High-precision accumulation for low-precision inputs. (Derived: TC Dominance > 0)
+  [1;32m│[0m [90m · tensorop_accum_fp64           [0m Tensor Core FP64 Accumulation: Double-precision accumulation for FP64 Tensor Cores. (Derived: FP64 Tensor Cores present)
+  [1;32m│[0m [90m · tensorop_accum_mixed_precision[0m Mixed Precision Accumulation: Native support for mixed output/accumulation types. (Derived: TC Dominance > 0)
+  [1;32m│[0m [90m · has_fp16_atomic_add           [0m FP16 Atomic Add: Hardware support for atomic addition on 16-bit floats. (Derived: TC Dominance > 0 & CC 7.0+)
+  [1;32m│[0m [32m ✓ has_fp32_atomic_add           [0m FP32 Atomic Add: Hardware support for atomic addition on 32-bit floats. (Derived: CC 3.0+)
+  [1;32m│[0m [32m ✓ has_fp64_atomic_add           [0m FP64 Atomic Add: Hardware support for atomic addition on 64-bit floats. (Derived: CC 6.0+)
+  [1;32m│[0m [32m ✓ supports_split_k_atomic_reduction[0m Split-K Reduction: Efficient GEMM reduction using atomics. (Derived: High FP32 Roofline || TC Dominance > 0)
+  [1;32m│[0m [32m ✓ supports_128b_global_ld       [0m 128-bit Global Loads: Vectorized loads (float4, int4) for optimal bandwidth. (Derived: Always True)
+  [1;32m│[0m [32m ✓ supports_ldmatrix_x4          [0m ldmatrix.x4: Maximum throughput matrix load from shared memory. (Derived: Max Tile FP16 >= 128)
+  [1;32m│[0m [32m ✓ supports_large_smem_tiles     [0m Large SMEM Tiling: Architecture supports/encourages >100KB shared memory tiles per block. (Derived: SMEM >= 96KB)
+  [1;32m│[0m [32m ✓ supports_high_register_pressure_kernels[0m High Register Pressure: Large register file supports complex, unrolled GEMM kernels. (Derived: Max Threads >= 1536)
+  [1;32m├─ Toolkit (cuBLASLt) ──────────────────────────────────┤[0m
+  [1;32m│[0m [32m ✓ has_cublas_lt                 [0m cuBLAS Lt: Lightweight GEMM API with algorithm selection and fusion. (CUDA 10.1+)
+  [1;32m│[0m [32m ✓ has_cublaslt_fused_epilogue   [0m cuBLAS Lt Fused Epilogue: Support for fusion of GEMM + Bias + Activation. (CUDA 11.0+)
+  [1;32m│[0m [90m · has_cublaslt_matmul_fp8       [0m cuBLAS Lt FP8 GEMM: Optimized 8-bit float matrix multiplication. (CUDA 11.8+, CC 8.9+)
+  [1;32m│[0m [90m · has_cublaslt_matmul_bf16      [0m cuBLAS Lt BF16 GEMM: Native BFloat16 matrix multiplication support. (CC 8.0+)
+  [1;32m│[0m [90m · has_cublaslt_matmul_int8      [0m cuBLAS Lt INT8 GEMM: Native accelerated 8-bit integer GEMM via IMMA. (CC 7.5+)
+  [1;32m│[0m [90m · supports_vectorized_ldmatrix  [0m Vectorized ldmatrix: Fast loading of matrix fragments to registers. (Derived: TC Dominance > 0 & Shared Memory >= 64KB)
+  [1;32m│[0m [90m · supports_tensor_epilogue_fusion[0m Epilogue Fusion: Ability to fuse Bias, ReLU, and GELU directly into GEMM. (Derived: High L2 Cache >= 4MB & Registers >= 64k)
+  [1;32m│[0m [90m · supports_gelu_poly_fastpath   [0m GELU Polynomial Fastpath: Optimized hardware approximation for GELU activation. (Derived: TC Dominance > 5)
+  [1;32m├─ Toolkit (CUDNN 9.11.0) ───────────────────────────────┤[0m
+  [1;32m│[0m [32m ✓ has_cudnn9                    [0m cuDNN 9.x compatibility: Graph-based API, fused attention backends, FP8 support. Requires CUDA 12.0+ and cuDNN 9+.
+  [1;32m│[0m [32m ✓ has_cudnn_v8                  [0m cuDNN v8+: Modern cuDNN API with backend support and fused ops.
+  [1;32m│[0m [32m ✓ has_cudnn_conv1d_f32          [0m cuDNN Conv1D (FP32): Standard 1D convolutions for audio/time-series.
+  [1;32m│[0m [32m ✓ has_cudnn_conv1d_f16          [0m cuDNN Conv1D (FP16): Accelerated 1D convolutions on Pascal/Volta+. (CC 6.0+)
+  [1;32m│[0m [90m · has_cudnn_conv1d_bf16         [0m cuDNN Conv1D (BF16): Accelerated 1D convolutions on Ampere+. (CC 8.0+)
+  [1;32m│[0m [32m ✓ has_cudnn_conv2d_f32          [0m cuDNN Conv2D (FP32): Standard 2D convolutions via legacy or backend API.
+  [1;32m│[0m [32m ✓ has_cudnn_conv2d_f16          [0m cuDNN Conv2D (FP16): Native half-precision 2D convolutions. (CC 6.0+)
+  [1;32m│[0m [90m · has_cudnn_conv2d_bf16         [0m cuDNN Conv2D (BF16): Native BFloat16 2D convolutions. (CC 8.0+)
+  [1;32m│[0m [32m ✓ has_cudnn_conv_transpose1d_f32[0m cuDNN ConvTranspose1d (FP32): Standard transposed 1D convolutions.
+  [1;32m│[0m [32m ✓ has_cudnn_conv_transpose1d_f16[0m cuDNN ConvTranspose1d (FP16): Native half-precision transposed 1D convolutions. (CC 6.0+)
+  [1;32m│[0m [90m · has_cudnn_conv_transpose1d_bf16[0m cuDNN ConvTranspose1d (BF16): Native BFloat16 transposed 1D convolutions. (CC 8.0+)
+  [1;32m│[0m [32m ✓ has_cudnn_conv_transpose2d_f32[0m cuDNN ConvTranspose2d (FP32): Standard transposed 2D convolutions.
+  [1;32m│[0m [32m ✓ has_cudnn_conv_transpose2d_f16[0m cuDNN ConvTranspose2d (FP16): Native half-precision transposed 2D convolutions. (CC 6.0+)
+  [1;32m│[0m [90m · has_cudnn_conv_transpose2d_bf16[0m cuDNN ConvTranspose2d (BF16): Native BFloat16 transposed 2D convolutions. (CC 8.0+)
+  [1;32m│[0m [90m · has_cudnn_fused_attention     [0m cuDNN Fused Attention: Specialized engines for multi-head attention (MHA). (cuDNN 8.9+, CC 8.0+)
+  [1;32m│[0m [90m · has_cudnn_sdpa                [0m cuDNN SDPA: Scaled Dot-Product Attention support through the Backend API. (cuDNN 8.9+, CC 8.0+)
+  [1;32m│[0m [32m ✓ has_cudnn_backend_api         [0m cuDNN Backend API: Support for operation graphs, fusion, and runtime engine selection. (cuDNN 8.x+)
+  [1;32m│[0m [32m ✓ has_cudnn_graph               [0m cuDNN Graph API: Modern API for building and executing operation graphs (cuDNN 9+).
+  [1;32m│[0m [32m ✓ has_cudnn_normalization       [0m cuDNN Normalization: High-performance BatchNorm, LayerNorm, and RMSNorm kernels.
+  [1;32m│[0m [32m ✓ has_cudnn_pooling             [0m cuDNN Pooling: Optimized Max/Average pooling operations.
+  [1;32m│[0m [32m ✓ has_cudnn_activation          [0m cuDNN Activation: Accelerated ReLu, Sigmoid, Tanh, and other point-wise activations.
+  [1;32m├─ Execution Profile & Architectural Regime ────────────┤[0m
+  [1;32m│[0m [35m· Regime confidence:                            [0m [1;33m95.0%[0m
+  [1;32m│[0m [35m· Numeric feasibility mode:                     [0m Native
+  [1;32m│[0m [35m· Architectural class:                          [0m Pre-Tensor (e.g. Pascal)
+  [1;32m│[0m [35m· Compute pipeline:                             [0m ScalarCuda
+  [1;32m│[0m [35m· Memory pipeline:                              [0m SmemBlocking
+  [1;32m│[0m [35m· Parallelism model:                            [0m OccupancyBound
+  [1;32m│[0m [35m· Numeric engine class:                         [0m MixedScalar
+  [1;32m│[0m [35m· Preferred GEMM family:                        [0m [1;32mRegister-blocked CUDA Core[0m
+  [1;32m├─ Architectural Ratios & Limits ───────────────────────┤[0m
+  [1;32m│[0m [36m· Representative SKU for constants:             [0m GTX 1080 Ti (GP102)
+  [1;32m│[0m [36m· Bytes per register file (per SM):             [0m 262144 bytes
+  [1;32m│[0m [36m· Shared Memory per SM:                         [0m 96 KB
+  [1;32m│[0m [36m· L2 Cache:                                     [0m 2 MB
+  [1;32m│[0m [36m· DRAM Bandwidth:                               [0m 320.0 GB/s
+  [1;32m│[0m [36m· Peak FP32 throughput:                         [0m 11.3 TFLOPS
+  [1;32m├─ Tensor Execution Mode Summary ───────────────────────┤[0m
+  [1;32m│[0m [35m· Tensor Core Support:                          [0m none
+  [1;32m│[0m [35m· Tensor Throughput Ratio (vs FP32):            [0m 0.0x
+  [1;32m│[0m [35m· Preferred GEMM mode:                          [0m CUDA Cores
+  [1;32m├─ Modeling & Limits ───────────────────────────────────┤[0m
+  [1;32m│[0m [33m· Ridge Point (FP32):                           [0m 35.3 FLOP/B
+  [1;32m│[0m [33m· Register-limited tile upper bound (FP16/FP32):[0m 156 / 110
+  [1;32m├─ Performance Regime ──────────────────────────────────┤[0m
+  [1;32m│[0m [35m· Compute vs memory balance:                    [0m balanced (sensitive to both limits)
+  [1;32m│[0m [35m· Register pressure sensitivity:                [0m low (abundant resources per SM)
+  [1;32m│[0m [35m· Scheduler pressure sensitivity:               [0m high (requires massive thread-level parallelism or ILP)
+  [1;32m│[0m [35m· ILP sensitivity:                              [0m high (dual-issue absent, relies on ILP)
+  [1;32m│[0m [35m· Issue slot target:                            [0m ≥ 70% to hide latency
+  [1;32m├─ Scale Sensitivity ───────────────────────────────────┤[0m
+  [1;32m│[0m [36m· Small-kernel efficiency:                      [0m moderate (better suited for smaller work drops)
+  [1;32m│[0m [36m· Large-kernel scaling:                         [0m excellent (saturates SMs linearly)
+  [1;32m│[0m [36m· Latency-dominated regime:                     [0m < 256 threads per block
+  [1;32m│[0m [36m· Warp specialization viability:                [0m low (no async copy or TC pipeline)
+  [1;32m├─ Data Movement Model ─────────────────────────────────┤[0m
+  [1;32m│[0m [33m· DRAM latency cost:                            [0m unhidable without occupancy (no async mechanisms)
+  [1;32m│[0m [33m· L2 reuse leverage:                            [0m moderate (streaming-biased, limited reuse cache)
+  [1;32m│[0m [33m· SMEM amortization:                            [0m strongly beneficial (essential for peak GEMM)
+  [1;32m├─ Execution Affordances ───────────────────────────────┤[0m
+  [1;32m│[0m [36m· Large-register kernels viable:                [0m yes
+  [1;32m│[0m [36m· Persistent kernels viable:                    [0m limited
+  [1;32m│[0m [36m· Async pipelines:                              [0m none
+  [1;32m├─ SM Execution Model ──────────────────────────────────┤[0m
+  [1;32m│[0m [36m· Max warps per SM:                             [0m 64
+  [1;32m│[0m [36m· Max blocks per SM:                            [0m 32
+  [1;32m│[0m [36m· Schedulers per SM:                            [0m 4
+  [1;32m├─ Throughput Ratios ───────────────────────────────────┤[0m
+  [1;32m│[0m [36m· FP32 per SM:                                  [0m 64.0 ops/cycle
+  [1;32m│[0m [36m· LD/ST per SM:                                 [0m 32.0 bytes/cycle
+  [1;32m│[0m [36m· Compute / Shared Memory Ratio:                [0m 3.2
+  [1;32m│[0m [36m· Compute / L2 Cache Ratio:                     [0m 8.7
+  [1;32m├─ Numeric Execution Modes ─────────────────────────────┤[0m
+  [1;32m│[0m [35m· FP32 math:                                    [0m native fused multi-add
+  [1;32m│[0m [35m· FP16 math:                                    [0m viable (native ISA)
+  [1;32m│[0m [35m· Half2 vector math:                            [0m unviable (throughput throttled, prefer FP32 compute)
+  [1;32m│[0m [35m· INT8 dot-product path:                        [0m viable (DP4A native support)
+  [1;32m│[0m [35m· Mixed-precision accumulate:                   [0m limited (scalar accumulation)
+  [1;32m├─ Software Execution Limits ───────────────────────────┤[0m
+  [1;32m│[0m [36m· Max async copies in flight:                   [0m 0
+  [1;32m│[0m [36m· Max barriers limit:                           [0m 0
+  [1;32m│[0m [36m· Cluster launch supported:                     [0m no
+  [1;32m│[0m [36m· Cooperative grid viable:                      [0m yes
+  [1;32m├─ Memory Reuse Envelope ───────────────────────────────┤[0m
+  [1;32m│[0m [33m· Expected reuse depth achievability:           [0m deep (high data reuse per LDG)
+  [1;32m│[0m [33m· SMEM staging depth:                           [0m double-buffered (2 stages)
+  [1;32m│[0m [33m· Register tiling headroom:                     [0m abundant
+  [1;32m│[0m [33m· Register reuse leverage:                      [0m very high (RF large, spills catastrophic)
+  [1;32m│[0m [33m· Bandwidth pressure regime:                    [0m L2/DRAM balanced constraint
+  [1;32m├─ Deep GEMM-Specific Signals ──────────────────────────┤[0m
+  [1;32m│[0m [33m· Preferred tile size range (K):                [0m 64 - 128
+  [1;32m│[0m [33m· Reuse depth achievable:                       [0m [33mmedium[0m
+  [1;32m│[0m [33m· Split-K viability:                            [0m Only for extreme aspect ratios or very large K
+  [1;32m│[0m [33m· Epilogue fusion headroom:                     [0m [31mlow[0m
+  [1;32m├─ Modeler Predictions & Ranks ─────────────────────────┤[0m
+  [1;32m│[0m [33m· Estimated occupancy window:                   [0m 60%-80%
+  [1;32m│[0m [33m· Latency hiding sufficiency:                   [0m Sufficient via thread-level parallelism (high occupancy required)
+  [1;32m│[0m [[1;32m 96.8%[0m] Blocked CUDA-core GEMM with double-buffered SMEM
+  [1;32m│[0m         [90m↳ uncertainty: [33m0.05[0m | regime_conf: [33m0.95[0m | [90mReliant on standard TLP and thread-level latency hiding.[0m
+  [1;32m│[0m [[1;32m  3.2%[0m] Register-heavy warp tiling kernel (avoid spilling)
+  [1;32m│[0m         [90m↳ uncertainty: [33m0.12[0m | regime_conf: [33m0.95[0m | [90mOptimized for large register files and high instruction-level parallelism.[0m
+  [1;32m└─────────────────────────────────────────────────────────┘[0m
+

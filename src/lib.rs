@@ -108,6 +108,9 @@ pub use arch_metrics::{
 pub use builder::{KernelBuilder, PtxOutput};
 #[cfg(feature = "heuristics")]
 pub mod predictor;
+#[cfg(feature = "heuristics")]
+/// EEGLog telemetry tracking.
+pub mod telemetry;
 
 #[cfg(feature = "capabilities")]
 pub use capabilities::{

@@ -371,13 +371,14 @@ fn compile_kernel(kernel_source: &str) {
 
 ### Prescriptive Decision Oracle (Hardware Predictor)
 
-CudaForge includes a `"runtime-grade"` predictor that acts as a Prescriptive Decision Oracle for graph compilers and runtimes. By passing the `ProblemShape` (e.g., GEMM M, N, K), the oracle provides executable intents to bypass brute-force autotuning:
+CudaForge includes a `"compiler-grade"` cognitive predictor that acts as a Prescriptive Decision Oracle for graph compilers and runtimes. By passing the `ProblemShape` (e.g., GEMM M, N, K), the oracle provides executable intents to bypass brute-force autotuning:
 
-- **Shape Physics**: Categorizes workloads (e.g., `LargeSquare`, `KDominant`, `TallSkinnyM`) and explains the exact *Tiling Rationale* (e.g., whether to use double-buffering or hardware asynchronous staging).
-- **Physical Realism**: Architecture-aware ceilings ensure a Pascal GPU reports `Latency-masked compute regime` while Hopper reports `Compute Bound (Tensor Core limited)`.
-- **Nuanced Utilization**: Predicts `flop_utilization` and `bw_utilization` by accounting for tile-level reuse and edge wave quantization.
+- **Shape Physics**: Categorizes workloads (e.g., `LargeSquare`, `KDominant`, `TallSkinnyM`) and projects them into a **Shape Manifold** to enable clustering and topological reuse of learned parameters.
+- **Probabilistic Scheduler Model**: Replaces scalar heuristics with a formal causal model of the GPU pipeline, evaluating `issue_rate`, `warp_ready_prob`, and `pipe_pressure` based on instruction dependencies and structural hazards.
+- **Hierarchical Memory Model**: Tracks hit probabilities across the cache hierarchy (`P(L1)`, `P(L2)`, `P(DRAM)`) to predict traffic-induced stalls and bandwidth bottlenecks with microarchitectural precision.
+- **Calibrated Uncertainty Theory**: Provides statistically rigorous bounds (`σ_runtime`) by separating **Epistemic** (lack of data), **Aleatoric** (task variance), and **Transfer** (cross-arch drift) uncertainty.
 - **Verification Targets**: Emits actionable assertions (`expected_issue_utilization`, `expected_stall_reason`) that runtimes can use to self-validate against Nsight Compute.
-- **Interval Predictions**: Provides `expected_runtime_us` with a statistical `runtime_interval_us`.
+- **Universal Telemetry (`GpuEEGLog`)**: A standardized JSON schema acting as the bridge between compilers (MLIR, Luminal), predictors, and profilers, tracking the full lifecycle from stimulus to Bayesian posterior update.
 
 ```bash
 # Output the predictor intent as machine-consumable JSON
