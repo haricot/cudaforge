@@ -186,8 +186,8 @@ fn print_capabilities(m: usize, n: usize, k: usize, dtype: cudaforge::DType, cal
         #[cfg(feature = "heuristics")]
         let (cublas_caps, cublaslt_caps, cudnn_caps) = {
             // Evaluate library capabilities once and group them
-            let (obs, derived) = &obs_and_derived;
-            let lib_results = cudaforge::evaluate_library_capabilities(&arch, obs, derived);
+            let (_obs, derived) = &obs_and_derived;
+            let lib_results = cudaforge::evaluate_library_capabilities(&arch, _obs, derived);
         
             let mut cublas_caps = Vec::new();
             let mut cublaslt_caps = Vec::new();
@@ -250,26 +250,19 @@ fn print_capabilities(m: usize, n: usize, k: usize, dtype: cudaforge::DType, cal
 
     #[cfg(feature = "heuristics")]
     {
-        let (obs, derived) = &obs_and_derived;
+        let (_obs, derived) = &obs_and_derived;
         let shape = cudaforge::ProblemShape { m, n, k };
         let predictor_engine = cudaforge::predictor::HardwarePredictor::new(arch.clone(), cudaforge::predictor::AnalyticalModel::default());
-        let predictor = predictor_engine.evaluate(shape, None).expect("Prediction failed");
+        let predictor = predictor_engine.evaluate(&shape, dtype, None).expect("Prediction failed");
 
-        let status_line = if predictor.is_calibrated {
+        let status_line = if predictor.hardware_observed.is_calibrated {
             "\x1b[1;32m├─ Execution Profile & Architectural Regime (CALIBRATED) ──┤\x1b[0m"
         } else {
             "\x1b[1;32m├─ Execution Profile & Architectural Regime ────────────┤\x1b[0m"
         };
         
         if json_mode {
-            let mut output = serde_json::Map::new();
-            if let Some(intent) = predictor.emit_intent() {
-                output.insert("kernel_intent".to_string(), serde_json::to_value(intent).unwrap());
-            }
-            output.insert("hardware_caps".to_string(), serde_json::to_value(&hw_results).unwrap());
-            output.insert("observables".to_string(), serde_json::to_value(obs).unwrap());
-            output.insert("derived".to_string(), serde_json::to_value(derived).unwrap());
-            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            println!("{}", serde_json::to_string_pretty(&predictor).unwrap());
             return;
         }
 
@@ -277,34 +270,37 @@ fn print_capabilities(m: usize, n: usize, k: usize, dtype: cudaforge::DType, cal
         if m > 0 || n > 0 || k > 0 {
              println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}x{}x{} ({})", "Target Problem Context:", m, n, k, dtype);
         }
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m \x1b[1;33m{:.1}%\x1b[0m", "Regime confidence:", predictor.regime_confidence * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Schema version:", predictor.schema_version);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Inference role:", predictor.intended_usage.role);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m \x1b[1;33m{:.1}%\x1b[0m", "Inference confidence:", predictor.inference.confidence_breakdown.regime * 100.0);
         
         // Phase 16: Numeric Feasibility
-        let f = &predictor.feasibility;
+        let f = &predictor.workload_observed.feasibility;
         println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Numeric feasibility mode:", f.execution_mode);
         if !f.is_native {
              println!("  \x1b[1;32m│\x1b[0m \x1b[90m↳ effective compute dtype: \x1b[33m{}\x1b[0m", f.effective_compute_dtype);
-             if let Some(reason) = f.penalty_reason {
+             if let Some(reason) = &f.penalty_reason {
                  println!("  \x1b[1;32m│\x1b[0m \x1b[90m↳ penalty: \x1b[31m{}\x1b[0m", reason);
              }
         }
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Architectural class:", predictor.execution_profile.arch_class);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:?}", "Compute pipeline:", predictor.execution_profile.compute_pipeline);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:?}", "Memory pipeline:", predictor.execution_profile.memory_pipeline);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:?}", "Parallelism model:", predictor.execution_profile.parallelism_model);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:?}", "Numeric engine class:", predictor.execution_profile.numeric_engine);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m \x1b[1;32m{}\x1b[0m", "Preferred GEMM family:", predictor.execution_profile.preferred_kernel_family);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Architectural class:", predictor.derived_metrics.architectural_model.profile.arch_class);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:?}", "Compute pipeline:", predictor.derived_metrics.architectural_model.profile.compute_pipeline);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:?}", "Memory pipeline:", predictor.derived_metrics.architectural_model.profile.memory_pipeline);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:?}", "Parallelism model:", predictor.derived_metrics.architectural_model.profile.parallelism_model);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:?}", "Numeric engine class:", predictor.derived_metrics.architectural_model.profile.numeric_engine);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m \x1b[1;32m{}\x1b[0m", "Architectural kernel prior:", predictor.derived_metrics.architectural_model.profile.preferred_kernel_family);
 
         let print_calibrated = |label: &str, val: &cudaforge::Measured<f32>, unit: &str| {
-            if let Some(_f) = val.calibration_factor {
+            if let Some(c) = &val.calibration_factor {
                  println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m \x1b[1;32m{:.1} {} (calibrated, spec: {:.1})\x1b[0m", label, val.effective(), unit, val.value);
+                 println!("  \x1b[1;32m│\x1b[0m \x1b[90m↳ calibration meaning: \x1b[33m{}\x1b[0m", c.meaning);
             } else {
                  println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {:.1} {}", label, val.value, unit);
             }
         };
 
         println!("  \x1b[1;32m├─ Architectural Ratios & Limits ───────────────────────┤\x1b[0m");
-        let obs = &predictor.observables;
+        let obs = &predictor.hardware_observed.observables;
         println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Representative SKU for constants:", obs.reference_gpu);
         println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {} bytes", "Bytes per register file (per SM):", obs.registers_per_sm.value * 4);
         println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {} KB", "Shared Memory per SM:", obs.shared_mem_per_sm.value / 1024);
@@ -317,7 +313,7 @@ fn print_capabilities(m: usize, n: usize, k: usize, dtype: cudaforge::DType, cal
         println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Tensor Core Support:", tc_support);
         println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:.1}x", "Tensor Throughput Ratio (vs FP32):", derived.tensor_core_dominance);
         let pref_gemm = if derived.tensor_core_dominance > 0.0 { "Tensor Cores" } else { "CUDA Cores" };
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Preferred GEMM mode:", pref_gemm);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Recommended GEMM engine:", pref_gemm);
 
         println!("  \x1b[1;32m├─ Modeling & Limits ───────────────────────────────────┤\x1b[0m");
         println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1} FLOP/B", "Ridge Point (FP32):", derived.roofline_fp32);
@@ -327,23 +323,39 @@ fn print_capabilities(m: usize, n: usize, k: usize, dtype: cudaforge::DType, cal
         }
         println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {} / {}", "Register-limited tile upper bound (FP16/FP32):", derived.max_tile_k_fp16, derived.max_tile_k_fp32);
 
-        println!("  \x1b[1;32m├─ Performance Regime ──────────────────────────────────┤\x1b[0m");
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Compute vs memory balance:", predictor.performance_regime.compute_vs_memory_balance);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Register pressure sensitivity:", predictor.performance_regime.register_pressure_sensitivity);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Scheduler pressure sensitivity:", predictor.performance_regime.scheduler_pressure_sensitivity);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "ILP sensitivity:", predictor.performance_regime.instruction_level_parallelism_sensitivity);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Issue slot target:", predictor.performance_regime.issue_slot_utilization_target);
+        println!("  \x1b[1;32m├─ Posterior Execution Regime ──────────────────────────┤\x1b[0m");
+        let er = &predictor.inference.execution_regime;
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m \x1b[1;31m{:.1}%\x1b[0m", "P(Compute Bound):", er.compute_bound * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m \x1b[1;33m{:.1}%\x1b[0m", "P(Balanced):", er.balanced * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m \x1b[1;34m{:.1}%\x1b[0m", "P(Memory Bound):", er.memory_bound * 100.0);
+        
+        println!("  \x1b[1;32m├─ Probabilistic Performance Posteriors ────────────────┤\x1b[0m");
+        let pp = &predictor.inference.performance_posteriors;
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m \x1b[1;32m{:.0} μs (σ={:.2})\x1b[0m", "Estimated runtime:", pp.runtime_us.mean, pp.runtime_us.stddev);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m \x1b[1;32m{:.1}% (μ={:.2}, σ={:.3})\x1b[0m", "Expected FLOP utilization:", pp.flop_utilization.mean * 100.0, pp.flop_utilization.mean, pp.flop_utilization.stddev);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m \x1b[1;32m{:.1}% (μ={:.2}, σ={:.3})\x1b[0m", "Expected DRAM utilization:", pp.bw_utilization.mean * 100.0, pp.bw_utilization.mean, pp.bw_utilization.stddev);
+
+        println!("  \x1b[1;32m├─ Resource Pressure Models ────────────────────────────┤\x1b[0m");
+        let rpm = &predictor.inference.resource_pressure_models;
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m \x1b[1;33m{:.1}% (μ={:.2}, σ={:.3})\x1b[0m", "Inferred scheduler pressure:", rpm.scheduler_pressure.mean * 100.0, rpm.scheduler_pressure.mean, rpm.scheduler_pressure.stddev);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m \x1b[1;31m{:.1}%\x1b[0m", "Risk of register spilling:", rpm.spill_risk.mean * 100.0);
+
+        println!("  \x1b[1;32m├─ Formal Memory Model (Posteriors) ────────────────────┤\x1b[0m");
+        let mm = &predictor.inference.memory_model;
+        println!("  \x1b[1;32m│\x1b[0m \x1b[34m· {:<46}\x1b[0m {:.1}%", "P(Hit L1/SMEM):", mm.l1_hit_rate.mean * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[34m· {:<46}\x1b[0m {:.1}%", "P(Hit L2):", mm.l2_hit_rate.mean * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[34m· {:<46}\x1b[0m {:.1} MB", "Estimated DRAM Traffic:", mm.dram_traffic_bytes / 1024.0 / 1024.0);
 
         println!("  \x1b[1;32m├─ Scale Sensitivity ───────────────────────────────────┤\x1b[0m");
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Small-kernel efficiency:", predictor.scale_sensitivity.small_kernel_efficiency);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Large-kernel scaling:", predictor.scale_sensitivity.large_kernel_scaling);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Latency-dominated regime:", predictor.scale_sensitivity.latency_dominated_regime_threshold);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Warp specialization viability:", predictor.scale_sensitivity.warp_specialization_viability);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Small-kernel efficiency:", predictor.derived_metrics.reuse_model.scale_sensitivity.small_kernel_efficiency);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Large-kernel scaling:", predictor.derived_metrics.reuse_model.scale_sensitivity.large_kernel_scaling);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Latency-dominated regime:", predictor.derived_metrics.reuse_model.scale_sensitivity.latency_dominated_regime_threshold);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Warp specialization viability:", predictor.derived_metrics.reuse_model.scale_sensitivity.warp_specialization_viability);
 
         println!("  \x1b[1;32m├─ Data Movement Model ─────────────────────────────────┤\x1b[0m");
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "DRAM latency cost:", predictor.data_movement_model.dram_latency_cost);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "L2 reuse leverage:", predictor.data_movement_model.l2_reuse_leverage);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "SMEM amortization:", predictor.data_movement_model.smem_amortization);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "DRAM latency cost:", predictor.derived_metrics.reuse_model.data_movement.dram_latency_cost);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "L2 reuse leverage:", predictor.derived_metrics.reuse_model.data_movement.l2_reuse_leverage);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "SMEM amortization:", predictor.derived_metrics.reuse_model.data_movement.smem_amortization);
 
         println!("  \x1b[1;32m├─ Execution Affordances ───────────────────────────────┤\x1b[0m");
         let large_reg = if obs.max_threads_per_sm.value >= 1536 { "yes" } else { "limited" };
@@ -354,89 +366,83 @@ fn print_capabilities(m: usize, n: usize, k: usize, dtype: cudaforge::DType, cal
         println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Async pipelines:", async_pipe);
 
         println!("  \x1b[1;32m├─ SM Execution Model ──────────────────────────────────┤\x1b[0m");
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Max warps per SM:", predictor.sm_execution_model.max_warps_per_sm);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Max blocks per SM:", predictor.sm_execution_model.max_blocks_per_sm);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Schedulers per SM:", predictor.sm_execution_model.schedulers_per_sm);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Max warps per SM:", predictor.derived_metrics.architectural_model.sm_limits.max_warps_per_sm);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Max blocks per SM:", predictor.derived_metrics.architectural_model.sm_limits.max_blocks_per_sm);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Schedulers per SM:", predictor.derived_metrics.architectural_model.sm_limits.schedulers_per_sm);
 
         println!("  \x1b[1;32m├─ Throughput Ratios ───────────────────────────────────┤\x1b[0m");
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {:.1} ops/cycle", "FP32 per SM:", predictor.throughput_ratios.fp32_per_sm_ops_cycle);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {:.1} bytes/cycle", "LD/ST per SM:", predictor.throughput_ratios.ldst_per_sm_bytes_cycle);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {:.1}", "Compute / Shared Memory Ratio:", predictor.throughput_ratios.compute_to_shared_ratio);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {:.1}", "Compute / L2 Cache Ratio:", predictor.throughput_ratios.compute_to_l2_ratio);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {:.1} ops/cycle", "FP32 per SM:", predictor.derived_metrics.architectural_model.throughput_ratios.fp32_per_sm_ops_cycle);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {:.1} bytes/cycle", "LD/ST per SM:", predictor.derived_metrics.architectural_model.throughput_ratios.ldst_per_sm_bytes_cycle);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {:.1}", "Compute / Shared Memory Ratio:", predictor.derived_metrics.architectural_model.throughput_ratios.compute_to_shared_ratio);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {:.1}", "Compute / L2 Cache Ratio:", predictor.derived_metrics.architectural_model.throughput_ratios.compute_to_l2_ratio);
 
         println!("  \x1b[1;32m├─ Numeric Execution Modes ─────────────────────────────┤\x1b[0m");
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "FP32 math:", predictor.numeric_execution_modes.fp32_math_class);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "FP16 math:", predictor.numeric_execution_modes.fp16_math);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Half2 vector math:", predictor.numeric_execution_modes.half2_vector_math);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "INT8 dot-product path:", predictor.numeric_execution_modes.int8_dot_product);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Mixed-precision accumulate:", predictor.numeric_execution_modes.mixed_precision_accumulate);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "FP32 math:", predictor.derived_metrics.architectural_model.math_modes.fp32_math_class);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "FP16 math:", predictor.derived_metrics.architectural_model.math_modes.fp16_math);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Half2 vector math:", predictor.derived_metrics.architectural_model.math_modes.half2_vector_math);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "INT8 dot-product path:", predictor.derived_metrics.architectural_model.math_modes.int8_dot_product);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {}", "Mixed-precision accumulate:", predictor.derived_metrics.architectural_model.math_modes.mixed_precision_accumulate);
 
-        println!("  \x1b[1;32m├─ Software Execution Limits ───────────────────────────┤\x1b[0m");
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Max async copies in flight:", predictor.software_execution_limits.max_async_copies_in_flight);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Max barriers limit:", predictor.software_execution_limits.max_barriers);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Cluster launch supported:", if predictor.software_execution_limits.cluster_launch_supported { "yes" } else { "no" });
-        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Cooperative grid viable:", if predictor.software_execution_limits.cooperative_grid_viable { "yes" } else { "no" });
+        println!("  \x1b[1;32m├─ Execution Constraints & Pressure ────────────────────┤\x1b[0m");
+        let ec = &predictor.derived_metrics.execution_constraints;
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Register pressure risk:", ec.register_pressure);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Shared memory pressure risk:", ec.shared_memory_pressure);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Bandwidth saturation risk:", ec.bandwidth_saturation);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Max async copies in flight:", ec.software_limits.max_async_copies_in_flight);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Max barriers limit:", ec.software_limits.max_barriers);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Cluster launch supported:", if ec.software_limits.cluster_launch_supported { "yes" } else { "no" });
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Cooperative grid viable:", if ec.software_limits.cooperative_grid_viable { "yes" } else { "no" });
 
         println!("  \x1b[1;32m├─ Memory Reuse Envelope ───────────────────────────────┤\x1b[0m");
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Expected reuse depth achievability:", predictor.memory_reuse_envelope.expected_reuse_depth);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "SMEM staging depth:", predictor.memory_reuse_envelope.smem_staging_depth);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Register tiling headroom:", predictor.memory_reuse_envelope.register_tiling_headroom);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Register reuse leverage:", predictor.memory_reuse_envelope.register_reuse_leverage);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Bandwidth pressure regime:", predictor.memory_reuse_envelope.bandwidth_pressure_regime);
-
-        println!("  \x1b[1;32m├─ Deep GEMM-Specific Signals ──────────────────────────┤\x1b[0m");
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {} - {}", "Preferred tile size range (K):", predictor.gemm_specific_signals.preferred_tile_size_range.0, predictor.gemm_specific_signals.preferred_tile_size_range.1);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Reuse depth achievable:", predictor.gemm_specific_signals.reuse_depth_achievable);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Split-K viability:", predictor.gemm_specific_signals.split_k_viability);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Epilogue fusion headroom:", predictor.gemm_specific_signals.epilogue_fusion_headroom);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Expected reuse depth achievability:", predictor.derived_metrics.reuse_model.memory_envelope.expected_reuse_depth);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "SMEM staging depth:", predictor.derived_metrics.reuse_model.memory_envelope.smem_staging_depth);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Register tiling headroom:", predictor.derived_metrics.reuse_model.memory_envelope.register_tiling_headroom);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Register reuse leverage:", predictor.derived_metrics.reuse_model.memory_envelope.register_reuse_leverage);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Bandwidth pressure regime:", predictor.derived_metrics.reuse_model.memory_envelope.bandwidth_pressure_regime);
 
         println!("  \x1b[1;32m├─ Modeler Predictions & Ranks ─────────────────────────┤\x1b[0m");
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}%-{}%", "Estimated occupancy window:", predictor.achievable_occupancy_range.0, predictor.achievable_occupancy_range.1);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Latency hiding sufficiency:", predictor.latency_hiding_sufficiency);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}% - {}%", "Estimated occupancy window:", predictor.derived_metrics.reuse_model.occupancy_window.0, predictor.derived_metrics.reuse_model.occupancy_window.1);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {}", "Latency hiding sufficiency:", predictor.derived_metrics.reuse_model.latency_hiding);
 
-        println!("  \x1b[1;32m├─ Scheduler Model Predictions ─────────────────────────┤\x1b[0m");
-        if let Some(intent) = predictor.emit_intent() {
-            let smrm = intent.performance_signature.scheduler_model;
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1}%", "Warp Ready Probability:", smrm.warp_ready_prob * 100.0);
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1}", "Avg Dependency Chain (cycles):", smrm.dep_chain_len);
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1}%", "Pipeline Pressure (Structural Hazards):", smrm.pipe_pressure * 100.0);
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1}%", "Replay Rate (Bank conflicts/divergence):", smrm.replay_rate * 100.0);
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m \x1b[1;32m{:.1}%\x1b[0m", "Predicted Issue Rate:", smrm.issue_rate * 100.0);
-        }
+        println!("  \x1b[1;32m├─ Scheduler Model Posteriors ──────────────────────────┤\x1b[0m");
+        let smrm = &predictor.inference.resource_pressure_models.scheduler_pressure;
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m \x1b[1;32m{:.1}%\x1b[0m", "Inferred Issue Rate (μ):", smrm.mean * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.3}", "Issue stddev (σ):", smrm.stddev);
 
-        println!("  \x1b[1;32m├─ Memory Hierarchy Probabilities ──────────────────────┤\x1b[0m");
-        if let Some(intent) = predictor.emit_intent() {
-            let cache = intent.performance_signature.cache_model;
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1}%", "P(Hit L1 | Access):", cache.l1_hit_rate * 100.0);
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.1}%", "P(Hit L2 | Miss L1):", cache.l2_hit_rate * 100.0);
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m \x1b[1;31m{:.1}%\x1b[0m", "P(Miss DRAM Cascade):", cache.dram_miss_rate * 100.0);
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.2} GB", "Total L2 Traffic:", cache.l2_traffic_bytes / 1e9);
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.2} GB", "Total DRAM Traffic:", cache.dram_traffic_bytes / 1e9);
-        }
+        println!("  \x1b[1;32m├─ Formal Memory Model (Posteriors) ────────────────────┤\x1b[0m");
+        let mm = &predictor.inference.memory_model;
+        println!("  \x1b[1;32m│\x1b[0m \x1b[34m· {:<46}\x1b[0m {:.1}%", "P(Hit L1/SMEM):", mm.l1_hit_rate.mean * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[34m· {:<46}\x1b[0m {:.1}%", "P(Hit L2):", mm.l2_hit_rate.mean * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[34m· {:<46}\x1b[0m {:.1} MB", "Estimated DRAM Traffic:", mm.dram_traffic_bytes / 1024.0 / 1024.0);
 
         println!("  \x1b[1;32m├─ Calibrated Uncertainty Theory ───────────────────────┤\x1b[0m");
-        if let Some(intent) = predictor.emit_intent() {
-            let u = intent.performance_signature.uncertainty;
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.3} (Lack of calibration)", "Epistemic Uncertainty:", u.epistemic_uncertainty);
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.3} (Inherent task variance)", "Aleatoric Uncertainty:", u.aleatoric_uncertainty);
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.3} (Cross-GPU drift)", "Transfer Uncertainty:", u.transfer_uncertainty);
-            println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m \x1b[35m{:.1}%\x1b[0m", "σ Runtime (Pooled StdDev):", u.sigma_runtime * 100.0);
-        }
+        let u = &predictor.uncertainty;
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.3} (Lack of calibration)", "Epistemic Uncertainty:", u.epistemic);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.3} (Inherent task variance)", "Aleatoric Uncertainty:", u.aleatoric);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[33m· {:<46}\x1b[0m {:.3} (Cross-GPU drift)", "Transfer Uncertainty:", u.transfer);
+
+        println!("  \x1b[1;32m├─ Workload-to-Arch Affinities ─────────────────────────┤\x1b[0m");
+        let aff = &predictor.workload_affinities;
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Compute-dense affinity (GEMM):", aff.compute_dense_gemm);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Tensor Core offload affinity:", aff.tensor_core_gemm);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Memory streaming affinity:", aff.memory_streaming);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Reduction-heavy affinity:", aff.reduction_heavy);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[36m· {:<46}\x1b[0m {}", "Persistent grid fusion affinity:", aff.persistent_fusion);
 
         println!("  \x1b[1;32m├─ Implementation Strategies ───────────────────────────┤\x1b[0m");
-        for likelihood in predictor.likelihood_distribution.iter() {
+        for likelihood in predictor.search_prior.candidate_kernels.iter() {
             println!("  \x1b[1;32m│\x1b[0m [\x1b[1;32m{:>5.1}%\x1b[0m] {}", likelihood.probability * 100.0, likelihood.strategy);
-            println!("  \x1b[1;32m│\x1b[0m         \x1b[90m↳ uncertainty: \x1b[33m{:.2}\x1b[0m | regime_conf: \x1b[33m{:.2}\x1b[0m | \x1b[90m{}\x1b[0m", likelihood.uncertainty, predictor.confidence_breakdown.regime, likelihood.reasoning);
+            println!("  \x1b[1;32m│\x1b[0m         \x1b[90m↳ uncertainty: \x1b[33m{:.2}\x1b[0m | regime_conf: \x1b[33m{:.2}\x1b[0m | \x1b[90m{}\x1b[0m", likelihood.uncertainty, predictor.inference.confidence_breakdown.regime, likelihood.reasoning);
         }
         
         println!("  \x1b[1;32m├─ Confidence Breakdown ────────────────────────────────┤\x1b[0m");
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m \x1b[1;32m{:.1}%\x1b[0m", "Overall Regime Confidence:", predictor.confidence_breakdown.regime * 100.0);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:.1}%", "Memory Traffic Model Confidence:", predictor.confidence_breakdown.memory_model * 100.0);
-        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:.1}%", "Scheduler & Pipeline Confidence:", predictor.confidence_breakdown.scheduler_model * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m \x1b[1;32m{:.1}%\x1b[0m", "Overall Regime Confidence:", predictor.inference.confidence_breakdown.regime * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:.1}%", "Memory Traffic Model Confidence:", predictor.inference.confidence_breakdown.memory_model * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:.1}%", "Scheduler & Pipeline Confidence:", predictor.inference.confidence_breakdown.scheduler_model * 100.0);
         
-        if !predictor.diagnostics.is_empty() {
+        if !predictor.inference.diagnostics.is_empty() {
             println!("  \x1b[1;31m├─ Architectural Diagnostics & Anomalies ───────────────┤\x1b[0m");
-            for diag in &predictor.diagnostics {
+            for diag in &predictor.inference.diagnostics {
                 println!("  \x1b[1;31m│\x1b[0m \x1b[33m· {}\x1b[0m", diag);
             }
         }

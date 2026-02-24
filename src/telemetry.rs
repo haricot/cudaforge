@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::predictor::{KernelIntent, CalibrationFeedback, CalibrationState, ShapeManifold};
 
@@ -14,7 +14,7 @@ use crate::predictor::{KernelIntent, CalibrationFeedback, CalibrationState, Shap
 /// 3. What did the hardware actually do (the empirical reality)?
 /// 4. How wrong was the Oracle (the divergence delta)?
 /// 5. How did the Oracle adjust its internal model (the posterior update)?
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GpuEEGLog {
     /// Timestamp or unique identifier for this kernel execution.
     pub session_id: String,
@@ -39,7 +39,7 @@ pub struct GpuEEGLog {
 }
 
 /// The algorithmic stimulus sent to the GPU.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EegStimulus {
     /// The normalized grouping this shape belongs to (enabling cross-kernel learning).
     pub shape_manifold: ShapeManifold,
@@ -50,7 +50,7 @@ pub struct EegStimulus {
 }
 
 /// The state of the Oracle's beliefs *before* the kernel executed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EegPrior {
     /// Expected runtime in microseconds.
     pub expected_runtime_us: f32,
@@ -58,14 +58,14 @@ pub struct EegPrior {
     pub expected_issue_util: f32,
     /// Expected bandwidth utilization.
     pub expected_bw_util: f32,
-    /// The kernel entropy score at the time of prediction (0.0 to 1.0).
-    pub prediction_entropy: f32,
+    /// The kernel predictability score at the time of prediction (0.0 to 1.0).
+    pub prediction_predictability: f32,
     /// The probability distribution of expected bottlenecks.
     pub regime_posterior: std::collections::HashMap<String, f32>,
 }
 
 /// The calculated error between the Oracle's prior and the hardware's reality.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EegDivergence {
     /// Absolute error in runtime prediction (microseconds).
     pub runtime_error_us: f32,
@@ -90,11 +90,11 @@ impl GpuEEGLog {
         
         let prior = EegPrior {
             expected_runtime_us: intent.expected_runtime_us,
-            expected_issue_util: intent.performance_signature.flop_utilization,
-            expected_bw_util: intent.performance_signature.bw_utilization,
-            prediction_entropy: intent.performance_signature.entropy.score,
+            expected_issue_util: intent.performance_signature.flop_utilization.mean,
+            expected_bw_util: intent.performance_signature.bw_utilization.mean,
+            prediction_predictability: intent.performance_signature.predictability.score,
             regime_posterior: intent.performance_signature.dominant_limits.iter()
-                .map(|(&k, &v)| (k.to_string(), v))
+                .map(|(k, v)| (k.clone(), *v))
                 .collect(),
         };
 

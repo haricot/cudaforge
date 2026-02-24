@@ -26,12 +26,12 @@
 //! - [`ModelType::Heuristic`] — rule of thumb, use with caution
 
 use crate::compute_cap::GpuArch;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 // ── Layer 1: Provenance ──────────────────────────────────────────────────────
 
 /// Source of a measurement or data point.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum DataSource {
     /// From NVIDIA architecture whitepaper or tuning guide
     NvidiaSpec,
@@ -85,17 +85,27 @@ pub struct CalibrationFact {
     pub measured_value: f32,
 }
 
+/// A semantic multiplier used to calibrate analytical models.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CalibrationFactor {
+    /// The multiplicative scaling ratio applied to the base value.
+    pub ratio: f32,
+    /// Semantic meaning of this calibration adjustment.
+    pub meaning: String,
+    /// The specific measurement or methodology this factor was derived from.
+    pub derived_from: String,
+}
+
 /// A value annotated with its provenance and optional calibration factor.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Measured<T> {
     /// The measured value
     pub value: T,
     /// Where this value comes from
     pub source: DataSource,
-    /// Optional multiplicative calibration factor for future empirical tuning.
-    /// When `Some(f)`, the effective value is `value * f`.
-    /// `None` means no calibration applied (default for spec-sourced data).
-    pub calibration_factor: Option<f32>,
+    /// Optional semantic calibration factor.
+    /// When `Some(f)`, the effective value is `value * f.ratio`.
+    pub calibration_factor: Option<CalibrationFactor>,
 }
 
 impl<T> Measured<T> {
@@ -130,7 +140,7 @@ impl<T> Measured<T> {
 impl Measured<f32> {
     /// Returns the effective value (value * calibration_factor).
     pub fn effective(&self) -> f32 {
-        self.value * self.calibration_factor.unwrap_or(1.0)
+        self.value * self.calibration_factor.as_ref().map(|c| c.ratio).unwrap_or(1.0)
     }
 }
 
@@ -151,12 +161,12 @@ impl Measured<f32> {
 ///
 /// For precise per-SKU data, override these values via [`Measured::from_runtime`]
 /// or [`Measured::from_user`] with actual device queries.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ArchObservables {
     /// Human-readable name of the flagship GPU these numbers come from.
     /// This is NOT an architectural property — it identifies the specific SKU
     /// used as reference for bandwidth/TFLOPS figures.
-    pub reference_gpu: &'static str,
+    pub reference_gpu: String,
     /// Number of 32-bit registers per SM (source: CUDA Prog Guide Table 16)
     pub registers_per_sm: Measured<u32>,
     /// Maximum configurable shared memory per SM in bytes (source: tuning guides)
@@ -193,14 +203,41 @@ pub struct ArchObservables {
 impl ArchObservables {
     /// Applies empirical scaling coefficients to the architectural metrics.
     pub fn apply_coefficients(&mut self, flop_scale: f32, bw_scale: f32) {
-        self.fp32_flops_tflops.calibration_factor = Some(flop_scale);
-        self.tensor_core_flops_tflops.calibration_factor = Some(flop_scale);
-        self.fp8_flops_tflops.calibration_factor = Some(flop_scale);
-        self.int8_tops.calibration_factor = Some(flop_scale);
-        
-        self.dram_bandwidth_gbps.calibration_factor = Some(bw_scale);
-        self.l2_bandwidth_gbps.calibration_factor = Some(bw_scale);
-        self.shared_mem_bandwidth_gbps.calibration_factor = Some(bw_scale);
+        self.dram_bandwidth_gbps.calibration_factor = Some(CalibrationFactor {
+            ratio: bw_scale,
+            meaning: "empirical sustained throughput ratio vs theoretical peak".to_string(),
+            derived_from: "microbench_bandwidth".to_string(),
+        });
+        self.fp32_flops_tflops.calibration_factor = Some(CalibrationFactor {
+            ratio: flop_scale,
+            meaning: "empirical compute efficiency under instruction-level pressure".to_string(),
+            derived_from: "microbench_gemm".to_string(),
+        });
+        self.tensor_core_flops_tflops.calibration_factor = Some(CalibrationFactor {
+            ratio: flop_scale,
+            meaning: "empirical compute efficiency under instruction-level pressure".to_string(),
+            derived_from: "microbench_gemm".to_string(),
+        });
+        self.fp8_flops_tflops.calibration_factor = Some(CalibrationFactor {
+            ratio: flop_scale,
+            meaning: "empirical compute efficiency under instruction-level pressure".to_string(),
+            derived_from: "microbench_gemm".to_string(),
+        });
+        self.int8_tops.calibration_factor = Some(CalibrationFactor {
+            ratio: flop_scale,
+            meaning: "empirical compute efficiency under instruction-level pressure".to_string(),
+            derived_from: "microbench_gemm".to_string(),
+        });
+        self.l2_bandwidth_gbps.calibration_factor = Some(CalibrationFactor {
+            ratio: bw_scale,
+            meaning: "cache hierarchy efficiency adjustment".to_string(),
+            derived_from: "microbench_bandwidth".to_string(),
+        });
+        self.shared_mem_bandwidth_gbps.calibration_factor = Some(CalibrationFactor {
+            ratio: bw_scale,
+            meaning: "on-chip memory bus utilization correction".to_string(),
+            derived_from: "microbench_bandwidth".to_string(),
+        });
     }
 
     /// Applies empirical measurements to calibrate the architecture model.
@@ -209,27 +246,20 @@ impl ArchObservables {
     /// ratio between the measured value and the architecturally expected (spec) value.
     pub fn calibrate(&mut self, facts: &[CalibrationFact]) {
         for fact in facts {
-            match fact.metric {
-                CalibrationMetric::DramBandwidth => {
-                    self.dram_bandwidth_gbps.calibration_factor =
-                        Some(fact.measured_value / self.dram_bandwidth_gbps.value);
-                }
-                CalibrationMetric::L2Bandwidth => {
-                    self.l2_bandwidth_gbps.calibration_factor =
-                        Some(fact.measured_value / self.l2_bandwidth_gbps.value);
-                }
-                CalibrationMetric::Fp32Compute => {
-                    self.fp32_flops_tflops.calibration_factor =
-                        Some(fact.measured_value / self.fp32_flops_tflops.value);
-                }
-                CalibrationMetric::Fp16Compute => {
-                    self.tensor_core_flops_tflops.calibration_factor =
-                        Some(fact.measured_value / self.tensor_core_flops_tflops.value);
-                }
-                CalibrationMetric::TensorCoreCompute => {
-                    self.tensor_core_flops_tflops.calibration_factor =
-                        Some(fact.measured_value / self.tensor_core_flops_tflops.value);
-                }
+            let (target, meaning) = match fact.metric {
+                CalibrationMetric::DramBandwidth => (&mut self.dram_bandwidth_gbps, "empirical sustained DRAM throughput"),
+                CalibrationMetric::L2Bandwidth => (&mut self.l2_bandwidth_gbps, "empirical L2 cache throughput"),
+                CalibrationMetric::Fp32Compute => (&mut self.fp32_flops_tflops, "empirical FP32 compute throughput"),
+                CalibrationMetric::Fp16Compute | CalibrationMetric::TensorCoreCompute => 
+                    (&mut self.tensor_core_flops_tflops, "empirical Tensor Core throughput"),
+            };
+
+            if target.value > 0.0 {
+                target.calibration_factor = Some(CalibrationFactor {
+                    ratio: fact.measured_value / target.value,
+                    meaning: meaning.to_string(),
+                    derived_from: "runtime_probe".to_string(),
+                });
             }
         }
     }
@@ -262,9 +292,9 @@ impl ArchObservables {
             // ── Blackwell (preliminary) ──────────────────────────────
             100 | 120 => Self {
                 reference_gpu: if base == 120 {
-                    "RTX 5090 (GB202)"
+                    "RTX 5090 (GB202)".to_string()
                 } else {
-                    "B200 (GB100)"
+                    "B200 (GB100)".to_string()
                 },
                 registers_per_sm: su32(65536),
                 shared_mem_per_sm: su32(if base == 120 { 128 * 1024 } else { 228 * 1024 }),
@@ -284,7 +314,7 @@ impl ArchObservables {
             },
             // ── Hopper ───────────────────────────────────────────────
             90 => Self {
-                reference_gpu: "H100 SXM (GH100)",
+                reference_gpu: "H100 SXM (GH100)".to_string(),
                 registers_per_sm: su32(65536),
                 shared_mem_per_sm: su32(228 * 1024),
                 max_threads_per_sm: su32(2048),
@@ -303,7 +333,7 @@ impl ArchObservables {
             },
             // ── Ada Lovelace ─────────────────────────────────────────
             89 => Self {
-                reference_gpu: "RTX 4090 (AD102)",
+                reference_gpu: "RTX 4090 (AD102)".to_string(),
                 registers_per_sm: su32(65536),
                 shared_mem_per_sm: su32(100 * 1024),
                 max_threads_per_sm: su32(1536),
@@ -322,7 +352,7 @@ impl ArchObservables {
             },
             // ── Jetson AGX Orin ──────────────────────────────────────
             87 => Self {
-                reference_gpu: "Jetson AGX Orin 64GB (GA10B)",
+                reference_gpu: "Jetson AGX Orin 64GB (GA10B)".to_string(),
                 registers_per_sm: su32(65536),
                 shared_mem_per_sm: su32(128 * 1024),
                 max_threads_per_sm: su32(1536),
@@ -341,7 +371,7 @@ impl ArchObservables {
             },
             // ── Ampere consumer ──────────────────────────────────────
             86 => Self {
-                reference_gpu: "RTX 3090 (GA102)",
+                reference_gpu: "RTX 3090 (GA102)".to_string(),
                 registers_per_sm: su32(65536),
                 shared_mem_per_sm: su32(100 * 1024),
                 max_threads_per_sm: su32(1536),
@@ -360,7 +390,7 @@ impl ArchObservables {
             },
             // ── Ampere data center ───────────────────────────────────
             80 => Self {
-                reference_gpu: "A100 SXM (GA100)",
+                reference_gpu: "A100 SXM (GA100)".to_string(),
                 registers_per_sm: su32(65536),
                 shared_mem_per_sm: su32(164 * 1024),
                 max_threads_per_sm: su32(2048),
@@ -379,7 +409,7 @@ impl ArchObservables {
             },
             // ── Turing ───────────────────────────────────────────────
             75 => Self {
-                reference_gpu: "RTX 2080 Ti (TU102)",
+                reference_gpu: "RTX 2080 Ti (TU102)".to_string(),
                 registers_per_sm: su32(65536),
                 shared_mem_per_sm: su32(64 * 1024),
                 max_threads_per_sm: su32(1024),
@@ -398,7 +428,7 @@ impl ArchObservables {
             },
             // ── Volta ────────────────────────────────────────────────
             70 => Self {
-                reference_gpu: "V100 SXM2 (GV100)",
+                reference_gpu: "V100 SXM2 (GV100)".to_string(),
                 registers_per_sm: su32(65536),
                 shared_mem_per_sm: su32(96 * 1024),
                 max_threads_per_sm: su32(2048),
@@ -416,8 +446,8 @@ impl ArchObservables {
                 shared_mem_bandwidth_gbps: sf32(14000.0),
             },
             // ── Pascal and older ─────────────────────────────────────
-            _ => Self {
-                reference_gpu: "GTX 1080 Ti (GP102)",
+            61 | 60 => Self {
+                reference_gpu: "GTX 1080 Ti (GP102)".to_string(),
                 registers_per_sm: su32(65536),
                 shared_mem_per_sm: su32(96 * 1024),
                 max_threads_per_sm: su32(2048),
@@ -433,6 +463,24 @@ impl ArchObservables {
                 schedulers_per_sm: su32(4), // GP102
                 l2_bandwidth_gbps: sf32(1300.0),
                 shared_mem_bandwidth_gbps: sf32(3500.0),
+            },
+            _ => Self {
+                reference_gpu: "Generic Legacy GPU".to_string(),
+                registers_per_sm: su32(32768),
+                shared_mem_per_sm: su32(48 * 1024),
+                max_threads_per_sm: su32(1024),
+                warp_size: 32,
+                l2_bytes: su64(1024 * 1024),
+                dram_bandwidth_gbps: sf32(100.0),
+                tensor_core_flops_tflops: sf32(0.0),
+                fp32_flops_tflops: sf32(2.0),
+                fp8_flops_tflops: sf32(0.0),
+                int8_tops: sf32(0.0),
+                max_warps_per_sm: su32(32),
+                max_blocks_per_sm: su32(16),
+                schedulers_per_sm: su32(2),
+                l2_bandwidth_gbps: sf32(200.0),
+                shared_mem_bandwidth_gbps: sf32(500.0),
             },
         }
     }
@@ -668,7 +716,7 @@ pub fn max_tile_elements(obs: &ArchObservables, bytes_per_element: u32) -> u32 {
 ///
 /// Unlike heuristic scores, every field here is computed from a named model
 /// function with explicit assumptions. See each model's documentation for details.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DerivedProperties {
     /// Reference occupancy at 32 registers/thread (conventional baseline, not invariant).
     /// From [`theoretical_occupancy_limit`] with `regs_per_thread = 32`.
@@ -957,10 +1005,15 @@ mod tests {
     fn test_calibration_factor() {
         let mut m = Measured::from_spec(100.0_f32);
         assert_eq!(m.calibration_factor, None);
-        m.calibration_factor = Some(0.85);
-        assert_eq!(m.calibration_factor, Some(0.85));
+        let factor = CalibrationFactor {
+            ratio: 0.85,
+            meaning: "test".to_string(),
+            derived_from: "test".to_string(),
+        };
+        m.calibration_factor = Some(factor.clone());
+        assert_eq!(m.calibration_factor, Some(factor));
         // Effective value = 100.0 * 0.85 = 85.0
-        let effective = m.value * m.calibration_factor.unwrap_or(1.0);
+        let effective = m.effective();
         assert!((effective - 85.0).abs() < 0.01);
     }
 }

@@ -86,9 +86,14 @@ pub const CAPABILITIES: &[Capability] = &[
         check: |arch| arch.base >= 30,
     },
     Capability {
-        name: "has_f16",
-        description: "FP16 (half precision): 16-bit float, half the size of f32. Enables faster inference on memory-bound workloads. Available since Maxwell (CC 5.3).",
+        name: "has_f16_storage",
+        description: "FP16 storage: Ability to load/store 16-bit floats. Available since Maxwell (CC 5.3+).",
         check: |arch| arch.base >= 53,
+    },
+    Capability {
+        name: "has_f16_arithmetic",
+        description: "FP16 arithmetic: Native half-precision throughput gain. Available on CC 5.3, 6.0, 6.2, and Volta+ (7.0+). Note: CC 6.1 (Pascal consumer) lacks this.",
+        check: |arch| arch.base == 53 || arch.base == 60 || arch.base == 62 || arch.base >= 70,
     },
     Capability {
         name: "has_half2_native",
@@ -190,6 +195,11 @@ pub const CAPABILITIES: &[Capability] = &[
     Capability {
         name: "has_wmma_bf16",
         description: "WMMA BF16: Tensor Core matrix multiply with BF16 inputs. BF16 has the same exponent range as FP32 (better stability than FP16). (CC 8.0+)",
+        check: |arch| arch.base >= 80,
+    },
+    Capability {
+        name: "has_bf16_storage",
+        description: "BF16 storage: Ability to load/store Brain-Float16. (CC 8.0+, Ampere+)",
         check: |arch| arch.base >= 80,
     },
     Capability {
@@ -631,6 +641,9 @@ pub fn emit_check_cfgs() {
     println!("cargo::rustc-check-cfg=cfg(inf_cc_70)");
     println!("cargo::rustc-check-cfg=cfg(inf_cc_61)");
     println!("cargo::rustc-check-cfg=cfg(inf_cc_53)");
+    println!("cargo::rustc-check-cfg=cfg(has_f16_storage)");
+    println!("cargo::rustc-check-cfg=cfg(has_f16_arithmetic)");
+    println!("cargo::rustc-check-cfg=cfg(has_bf16_storage)");
     // Toolkit version identifiers
     println!("cargo::rustc-check-cfg=cfg(cuda_toolkit_major, values(\"7\", \"8\", \"9\", \"10\", \"11\", \"12\", \"13\"))");
     println!("cargo::rustc-check-cfg=cfg(cuda_toolkit_at_least_12)");

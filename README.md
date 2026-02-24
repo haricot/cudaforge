@@ -21,7 +21,7 @@ Advanced CUDA kernel builder for Rust with **incremental builds**, **auto-detect
 - 📁 **Flexible Sources** - Directory, glob, files, or exclude patterns
 - 🔬 **Hardware Capabilities** - Auto-detect and expose GPU features as `cfg` flags and C++ macros
 - 📊 **Architectural Metrics** - Roofline models, occupancy, precision ratios as C defines for JIT
-- 🔮 **Hardware Predictor** - Prescriptive Decision Oracle for runtimes providing shape physics and performance signatures
+- 🔮 **Probabilistic Prior Generator** - Scientific prior generator for GPU kernels, providing formal performance posteriors, shape physics, and Bayesian occupancy models.
 
 ## Installation
 
@@ -369,13 +369,13 @@ fn compile_kernel(kernel_source: &str) {
 }
 ```
 
-### Prescriptive Decision Oracle (Hardware Predictor)
+### Probabilistic Inference Oracle (Hardware Predictor)
 
-CudaForge includes a `"compiler-grade"` cognitive predictor that acts as a Prescriptive Decision Oracle for graph compilers and runtimes. By passing the `ProblemShape` (e.g., GEMM M, N, K), the oracle provides executable intents to bypass brute-force autotuning:
+CudaForge includes a `"compiler-grade"` cognitive predictor that acts as a Probabilistic Inference Oracle for graph compilers and runtimes. By passing the `ProblemShape` (e.g., GEMM M, N, K), the oracle provides executable intents to bypass brute-force autotuning:
 
 - **Shape Physics**: Categorizes workloads (e.g., `LargeSquare`, `KDominant`, `TallSkinnyM`) and projects them into a **Shape Manifold** to enable clustering and topological reuse of learned parameters.
-- **Probabilistic Scheduler Model**: Replaces scalar heuristics with a formal causal model of the GPU pipeline, evaluating `issue_rate`, `warp_ready_prob`, and `pipe_pressure` based on instruction dependencies and structural hazards.
-- **Hierarchical Memory Model**: Tracks hit probabilities across the cache hierarchy (`P(L1)`, `P(L2)`, `P(DRAM)`) to predict traffic-induced stalls and bandwidth bottlenecks with microarchitectural precision.
+- **Probabilistic Scheduler Model**: Replaces scalar heuristics with a formal causal model of the GPU pipeline using `GaussianPrior` variables for `issue_rate`, `warp_ready_prob`, and `pipe_pressure`.
+- **Hierarchical Memory Model**: Tracks formal hit probabilities across the cache hierarchy (`P(L1)`, `P(L2)`, `P(DRAM)`) to predict traffic-induced stalls and bandwidth bottlenecks with microarchitectural precision.
 - **Calibrated Uncertainty Theory**: Provides statistically rigorous bounds (`σ_runtime`) by separating **Epistemic** (lack of data), **Aleatoric** (task variance), and **Transfer** (cross-arch drift) uncertainty.
 - **Verification Targets**: Emits actionable assertions (`expected_issue_utilization`, `expected_stall_reason`) that runtimes can use to self-validate against Nsight Compute.
 - **Universal Telemetry (`GpuEEGLog`)**: A standardized JSON schema acting as the bridge between compilers (MLIR, Luminal), predictors, and profilers, tracking the full lifecycle from stimulus to Bayesian posterior update.
@@ -577,3 +577,15 @@ Backward compatibility aliases are available:
 ## License
 
 MIT OR Apache-2.0
+## Scientific Philosophy: The Prior Generator
+
+CUDAForge positions itself as a **Probabilistic Prior Generator** for GPU performance. Unlike traditional deterministic oracles, it treats kernel performance as a stochastic process subject to microarchitectural jitter and latent variables.
+
+### Bayesian Autotuning
+The system generates a **compile-time prior** (belief state) over the hardware's execution regime. These priors are designed to be consumed by runtime autotuners (e.g., in `Mistral.rs` or `Luminal`) to:
+1. **Reduce Search Space**: Prune implementation strategies that have low posterior probability.
+2. **Warm-Start Optimization**: Provide a calibrated starting point for Bayesian optimization.
+3. **Formalize Uncertainty**: Explicitly communicate epistemic (model) and aleatoric (system) variance.
+
+### Physical Realism
+CudaForge's models are physically constrained (e.g., capping scheduler pressure at 0.85) to avoid non-physical "perfect" saturation claims common in simplistic roofline models.
