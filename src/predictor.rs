@@ -764,37 +764,106 @@ impl ProbabilisticModel for BayesianModel {
             arch, obs, derived, &ExecutionProfile::default(), shape, &NumericFeasibility::default(), calib
         );
         
-        // Adjust the analytical signature using latent intensities
-        sig.scheduler_model.issue_rate *= self.theta.lambda_issue;
-        sig.cache_model.dram_miss_rate *= self.theta.lambda_mem;
-        sig.uncertainty.epistemic_uncertainty = self.variance.lambda_issue.max(self.variance.lambda_mem);
+        let apply_theta = |s: &mut PerformanceSignature, t: &LatentStateTheta| {
+            s.scheduler_model.issue_rate *= t.lambda_issue;
+            s.cache_model.dram_miss_rate *= t.lambda_mem;
+        };
+        apply_theta(&mut sig, &self.theta);
+        
+        
+        // ── Phase 43: Jacobian Uncertainty Propagation ──
+        // We calculate J = \nabla_\theta T using finite differences.
+        let epsilon = 1e-4;
+        
+        // Localized Runtime Evaluator for Jacobian
+        let calc_runtime = |s: &PerformanceSignature| -> f32 {
+            let m = shape.m as f64;
+            let n = shape.n as f64;
+            let k = shape.k as f64;
+            let total_flops = 2.0 * m * n * k;
+            let est_tflops = 10.0 * s.flop_utilization as f64; // Peak FP32 proxy
+            if est_tflops > 0.0 {
+                (total_flops / (est_tflops * 1e12) * 1e6) as f32
+            } else {
+                0.0
+            }
+        };
+        
+        let base_runtime = calc_runtime(&sig);
+        
+        // Helper to evaluate runtime with perturbed theta
+        let eval_perturbed = |t_perturbed: LatentStateTheta| -> f32 {
+            let mut s = estimate_performance_signature(
+                arch, obs, derived, &ExecutionProfile::default(), shape, &NumericFeasibility::default(), calib
+            );
+            apply_theta(&mut s, &t_perturbed);
+            calc_runtime(&s)
+        };
+        
+        // J = [dT/dλ_issue, dT/dλ_mem]
+        let mut t_issue = self.theta.clone();
+        t_issue.lambda_issue += epsilon;
+        let dt_dissue = (eval_perturbed(t_issue) - base_runtime) / epsilon;
+        
+        let mut t_mem = self.theta.clone();
+        t_mem.lambda_mem += epsilon;
+        let dt_dmem = (eval_perturbed(t_mem) - base_runtime) / epsilon;
+        
+        // σ_T^2 = J * Σ_θ * J^T + σ_noise^2
+        let variance_issue = self.variance.lambda_issue;
+        let variance_mem = self.variance.lambda_mem;
+        
+        let variance_t = (dt_dissue * dt_dissue * variance_issue) 
+                       + (dt_dmem * dt_dmem * variance_mem);
+        
+        // Convert to standard deviation relative to baseline runtime
+        let sigma_t = (variance_t.max(0.0).sqrt() / base_runtime.max(1e-6)).clamp(0.0, 1.0);
+        
+        sig.uncertainty.epistemic_uncertainty = sigma_t;
         
         sig
+
     }
 
     fn update_posterior(&mut self, telemetry: &crate::telemetry::GpuEEGLog) {
         // Implementation of: p(θ | D_new) ∝ p(D_new | θ) p(θ)
-        // We use a simplified Kalman-style update for the latent intensities.
+        // We use a formal Extended Kalman Filter (EKF) update for the latent intensities.
         
-        let learning_rate = 0.1; // Baseline learning rate (Kalman Gain proxy)
+        // Observation: measured runtime ratio
+        let z = telemetry.divergence_delta.runtime_ratio; 
+        // Expected observation (normalized via delta base)
+        let h_x = 1.0_f32; 
         
-        // Likelihood of issue rate observation
-        let issue_error = telemetry.empirical_response.measured_issue_utilization - self.theta.lambda_issue;
-        self.theta.lambda_issue += learning_rate * issue_error;
-        self.variance.lambda_issue *= 1.0 - learning_rate; // Uncertainty decreases with data
+        // Jacobian of observation model H (simplified proxy mapping delta to issue/mem ratios)
+        // If we are slower (z > 1.0), it implies higher stall/memory intensity or lower issue
+        let h_issue = -0.5_f32; // Assuming lower issue rate -> slower runtime
+        let h_mem = 0.5_f32;   // Assuming higher mem intensity -> slower runtime
         
-        // Adjust based on divergence delta
-        let delta = telemetry.divergence_delta.runtime_ratio;
+        let p_issue = self.variance.lambda_issue;
+        let p_mem = self.variance.lambda_mem;
         
-        // If delta > 1.0, we were too optimistic (measured > predicted)
-        if delta > 1.1 {
-            self.theta.lambda_issue *= 0.95;
-            self.theta.lambda_stall *= 1.05;
-        } else if delta < 0.9 {
-            // Too pessimistic (measured < predicted)
-            self.theta.lambda_issue *= 1.05;
-            self.theta.lambda_stall *= 0.95;
-        }
+        // Observation noise covariance R
+        let r_noise = 0.05_f32; 
+        
+        // Innovation (residual) y = z - h_x
+        let y = z - h_x;
+        
+        // Innovation covariance S = H P H^T + R
+        let s_cov = (h_issue * h_issue * p_issue) + (h_mem * h_mem * p_mem) + r_noise;
+        
+        // Kalman Gain K = P H^T S^-1
+        let k_issue = (p_issue * h_issue) / s_cov;
+        let k_mem = (p_mem * h_mem) / s_cov;
+        
+        // Update State Mean: μ = μ + K y
+        self.theta.lambda_issue = (self.theta.lambda_issue + k_issue * y).max(0.01);
+        self.theta.lambda_mem = (self.theta.lambda_mem + k_mem * y).max(0.01);
+        self.theta.lambda_stall = (self.theta.lambda_stall + (k_mem - k_issue) * y).max(0.01);
+        
+        // Update State Covariance: P = (I - K H) P
+        self.variance.lambda_issue = (1.0 - k_issue * h_issue) * p_issue;
+        self.variance.lambda_mem = (1.0 - k_mem * h_mem) * p_mem;
+        self.variance.lambda_stall = self.variance.lambda_issue.max(self.variance.lambda_mem);
     }
 }
 
@@ -2023,32 +2092,37 @@ fn estimate_performance_signature(
     // Divergence risk increases if shapes are not powers of two (requiring bounds checking in the kernel)
     let divergence_risk = if is_power_of_two { 0.05 } else { 0.35 } + if is_small { 0.2 } else { 0.0 };
 
-    // ── Phase 36: Probabilistic Scheduler Model ──
+    // ── Phase 43: Formal Generative Scheduler Model ──
     let occ = derived.reference_occupancy_32regs.clamp(0.1, 1.0);
-    // Probability that at least one warp is ready
-    let mem_stall_prob = min_dram_time_s / total_time_s;
-    let base_ready_prob = (1.0 - (mem_stall_prob * 0.8).powf(occ as f64 * 32.0)).clamp(0.1, 1.0) as f32;
+    let mem_stall_prob = min_dram_time_s / total_time_s.max(1e-9);
     
-    let warp_ready_prob = (base_ready_prob * (1.0 - divergence_risk)).clamp(0.01, 1.0);
+    // P(Warp Ready) modeled as a logistic function of occupancy, memory stalls, and divergence
+    // Positive factors: Higher occupancy increases readiness.
+    // Negative factors: Memory stalls and divergence decrease readiness.
+    let logit_ready = 4.0 * (occ as f32) - 8.0 * (mem_stall_prob as f32) - 3.0 * divergence_risk;
+    let warp_ready_prob = 1.0 / (1.0 + (-logit_ready).exp());
     
     // Deeper dependency chains for Tensor Cores
     let dep_chain_len = if has_tensor_cores { 8.0 } else { 4.0 };
     
-    // Pipeline pressure (reduced on dual-issue architectures like Ampere)
+    // P(Issue Success) modeled as a logistic function of warp readiness, structural hazards, and replay rate
     let dual_issue_factor = if arch.base >= 80 { 0.7 } else { 1.0 };
-    let pipe_pressure = ((compute_prob as f32) * dual_issue_factor * calib.pressure_tune_coeff).clamp(0.0, 1.0);
+    let structural_hazard_penalty = (compute_prob as f32) * dual_issue_factor * calib.pressure_tune_coeff;
     
-    // Memory unaligned bank conflicts / boundary checks causing replays
     let replay_rate: f32 = if !is_power_of_two || is_small { 0.15 } else { 0.02 };
     
-    // Issue Rate is geometrically bound by constraints
-    let dispatch_bandwidth = (obs.schedulers_per_sm.value as f32) / (obs.max_warps_per_sm.value as f32 / occ);
-    let issue_rate = warp_ready_prob
-        .min(1.0 - pipe_pressure.min(0.99))
-        .min(dispatch_bandwidth)
-        .min(1.0 - replay_rate.min(0.99))
-        .clamp(0.01, 1.0);
-        
+    // Logit for issue success: highly depends on having a ready warp, penalized by hazards/replays
+    let logit_issue = 6.0 * warp_ready_prob - 4.0 * structural_hazard_penalty - 5.0 * replay_rate - 2.0;
+    
+    // Dispatch bandwidth limits the maximum *probability* of an issue slot being filled in this model
+    let dispatch_bandwidth = (obs.schedulers_per_sm.value as f32) / (obs.max_warps_per_sm.value as f32 / occ).max(1.0);
+    
+    // The generative issue rate is the sigmoid bound by the hard physical dispatch limits
+    let raw_issue_prob = 1.0 / (1.0 + (-logit_issue).exp());
+    let issue_rate = raw_issue_prob.min(dispatch_bandwidth).clamp(0.01, 1.0);
+
+    let pipe_pressure = structural_hazard_penalty.clamp(0.0, 1.0); // Keep for diagnostic output
+
     let scheduler_model = SchedulerModel {
         warp_ready_prob,
         dep_chain_len,
