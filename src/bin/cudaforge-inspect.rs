@@ -426,7 +426,19 @@ fn print_capabilities(m: usize, n: usize, k: usize, dtype: cudaforge::DType, cal
         println!("  \x1b[1;32m├─ Implementation Strategies ───────────────────────────┤\x1b[0m");
         for likelihood in predictor.likelihood_distribution.iter() {
             println!("  \x1b[1;32m│\x1b[0m [\x1b[1;32m{:>5.1}%\x1b[0m] {}", likelihood.probability * 100.0, likelihood.strategy);
-            println!("  \x1b[1;32m│\x1b[0m         \x1b[90m↳ uncertainty: \x1b[33m{:.2}\x1b[0m | regime_conf: \x1b[33m{:.2}\x1b[0m | \x1b[90m{}\x1b[0m", likelihood.uncertainty, predictor.regime_confidence, likelihood.reasoning);
+            println!("  \x1b[1;32m│\x1b[0m         \x1b[90m↳ uncertainty: \x1b[33m{:.2}\x1b[0m | regime_conf: \x1b[33m{:.2}\x1b[0m | \x1b[90m{}\x1b[0m", likelihood.uncertainty, predictor.confidence_breakdown.regime, likelihood.reasoning);
+        }
+        
+        println!("  \x1b[1;32m├─ Confidence Breakdown ────────────────────────────────┤\x1b[0m");
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m \x1b[1;32m{:.1}%\x1b[0m", "Overall Regime Confidence:", predictor.confidence_breakdown.regime * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:.1}%", "Memory Traffic Model Confidence:", predictor.confidence_breakdown.memory_model * 100.0);
+        println!("  \x1b[1;32m│\x1b[0m \x1b[35m· {:<46}\x1b[0m {:.1}%", "Scheduler & Pipeline Confidence:", predictor.confidence_breakdown.scheduler_model * 100.0);
+        
+        if !predictor.diagnostics.is_empty() {
+            println!("  \x1b[1;31m├─ Architectural Diagnostics & Anomalies ───────────────┤\x1b[0m");
+            for diag in &predictor.diagnostics {
+                println!("  \x1b[1;31m│\x1b[0m \x1b[33m· {}\x1b[0m", diag);
+            }
         }
     }
 
