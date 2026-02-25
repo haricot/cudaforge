@@ -123,16 +123,70 @@ pub struct TuningContext {
     pub determinism_required: bool,
 }
 
-/// The formal probabilistic hardware oracle trait for ML compilers.
-pub trait ProbabilisticHardwareOracle: Send + Sync {
-    /// Produce a probabilistic posterior for a specific workload.
-    fn posterior(&self, workload: &WorkloadDesc) -> InferredState;
+/// Report on the feasibility of the workload on the target hardware.
+#[derive(Debug, Clone, Serialize)]
+pub struct FeasibilityReport {
+    /// Hardware support feasibility for the requested data type.
+    pub numeric_feasibility: NumericFeasibility,
+    /// Quantitative risk of register/memory/bandwidth pressure.
+    pub pressure_risk: ExecutionConstraints,
+}
 
-    /// Derive an actionable execution policy from an inferred state.
-    fn policy(&self, posterior: &InferredState, context: &TuningContext) -> ExecutionPolicy;
+/// Model of how performance scales with problem size and hardware resources.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScalingModel {
+    /// The high-level performance regime distribution.
+    pub execution_regime: RegimePosterior,
+    /// Formal model of data reuse and scaling.
+    pub reuse_model: ReuseModel,
+    /// Predicted performance scaling factors.
+    pub scaling_laws: PerformanceRegime,
+}
 
-    /// Update the oracle's internal belief state based on runtime feedback.
+/// Probabilistic prior over implementation strategies.
+#[derive(Debug, Clone, Serialize)]
+pub struct StrategyDistribution {
+    /// Ranked list of candidate implementation strategies with posterior probabilities.
+    pub rankings: Vec<KernelPrediction>,
+    /// Suggested pruning of the autotuning search space.
+    pub search_space: SearchSpace,
+}
+
+/// Explicit uncertainty quantification for the prior.
+#[derive(Debug, Clone, Serialize)]
+pub struct PriorUncertainty {
+    /// Information entropy of the kernel selection (bits).
+    pub kernel_entropy: f32,
+    /// Information entropy of the regime distribution (bits).
+    pub regime_entropy: f32,
+    /// Statistical model of prediction uncertainty.
+    pub calibrated_uncertainty: CalibratedUncertainty,
+    /// Confidence breakdown for specific subsystems.
+    pub confidence: ConfidenceBreakdown,
+}
+
+/// The formal hardware-conditioned analytical prior provider for ML compilers.
+pub trait HardwareConditionedPrior: Send + Sync {
+    /// Check strict hardware feasibility and resource constraints.
+    fn feasibility(&self, workload: &WorkloadDesc) -> FeasibilityReport;
+
+    /// Predict performance scaling laws and bottlenecks.
+    fn scaling(&self, workload: &WorkloadDesc) -> ScalingModel;
+
+    /// Generate a probabilistic prior over implementation strategies.
+    fn strategy_prior(&self, workload: &WorkloadDesc) -> StrategyDistribution;
+
+    /// Quantify the uncertainty of the generated priors.
+    fn uncertainty(&self, workload: &WorkloadDesc) -> PriorUncertainty;
+
+    /// Update the internal belief state based on runtime feedback.
     fn update(&mut self, observation: &CalibrationFeedback);
+}
+
+/// Legacy trait alias for backward compatibility during refactor.
+pub trait ProbabilisticHardwareOracle: HardwareConditionedPrior {
+    /// Produce a probabilistic posterior for a specific workload (aggregates prior stages).
+    fn posterior(&self, workload: &WorkloadDesc) -> InferredState;
 
     /// Annotate a generic graph node with architectural affinities and risks.
     fn annotate_node(&self, workload: &WorkloadDesc, labels: &mut HashMap<String, String>);
@@ -1351,88 +1405,69 @@ pub struct HardwarePredictor<M: ProbabilisticModel = AnalyticalModel> {
     pub model: M,
 }
 
-impl<M: ProbabilisticModel> ProbabilisticHardwareOracle for HardwarePredictor<M> {
-    fn posterior(&self, workload: &WorkloadDesc) -> InferredState {
-        let mut obs = ArchObservables::from_compute_cap(self.arch.base);
-        let calib = workload.calibration.clone().unwrap_or_default();
-        obs.apply_coefficients(calib.flop_scale_coeff, calib.bw_scale_coeff);
-        
-        let derived = DerivedProperties::from_observables(&obs);
-        let sig = self.model.estimate(&self.arch, &obs, &derived, &workload.shape, &calib);
-        
-        let prior = PredictorPrior::evaluate(&self.arch, obs, derived, &workload.shape, workload.dtype, Some(calib), sig);
-        prior.inference
+impl<M: ProbabilisticModel> HardwareConditionedPrior for HardwarePredictor<M> {
+    fn feasibility(&self, workload: &WorkloadDesc) -> FeasibilityReport {
+        let report = self.evaluate(&workload.shape, workload.dtype, workload.calibration.clone()).unwrap();
+        FeasibilityReport {
+            numeric_feasibility: report.workload_observed.feasibility,
+            pressure_risk: report.derived_metrics.execution_constraints,
+        }
     }
 
-    fn policy(&self, posterior: &InferredState, context: &TuningContext) -> ExecutionPolicy {
-        // Derive rankings from the kernel family distribution
-        let mut rankings = posterior.kernel_family_distribution.clone();
-        
-        // Filter strategies if strict determinism is required
-        if context.determinism_required {
-            rankings.retain(|k| k.uncertainty < 0.2);
+    fn scaling(&self, workload: &WorkloadDesc) -> ScalingModel {
+        let report = self.evaluate(&workload.shape, workload.dtype, workload.calibration.clone()).unwrap();
+        ScalingModel {
+            execution_regime: report.inference.execution_regime,
+            reuse_model: report.derived_metrics.reuse_model,
+            scaling_laws: report.derived_metrics.execution_constraints.regime_factors,
         }
+    }
 
-        // Construct search space based on the highest-probability candidate if available
-        let search_space = if let Some(_best) = rankings.first() {
-            // Adjust search rigor based on budget and phase
-            let rigorous = context.tuning_budget == "thorough" || context.phase == TuningPhase::Offline;
-
-            // In a real implementation, we'd pull this from the search_prior or similar
-            // For now, we return a valid but generic search space reduction
-            let mut space = SearchSpace {
-                plausible_block_sizes: vec![(128, 128), (128, 64), (64, 128)],
-                plausible_k_blocking: vec![32],
-                smem_stages: vec![2],
-            };
-
-            if rigorous {
-                space.plausible_k_blocking.push(64);
-                space.plausible_k_blocking.push(128);
-                space.smem_stages.push(3);
-                space.smem_stages.push(4);
-            }
-
-            space
-        } else {
-            SearchSpace::default()
-        };
-
-        let pruned_volume = search_space.volume();
-        let naive_volume = SearchSpace::naive_volume();
-        let pruning_factor = if pruned_volume > 0 {
-            naive_volume as f32 / pruned_volume as f32
-        } else {
-            1.0
-        };
-
-        let mut graph_hints = Vec::new();
-        if posterior.execution_regime.memory_bound > 0.7 {
-            graph_hints.push("Aggressive fusion recommended to reduce DRAM pressure".to_string());
+    fn strategy_prior(&self, workload: &WorkloadDesc) -> StrategyDistribution {
+        let report = self.evaluate(&workload.shape, workload.dtype, workload.calibration.clone()).unwrap();
+        StrategyDistribution {
+            rankings: report.inference.kernel_family_distribution,
+            search_space: report.search_prior.search_space_reduction,
         }
-        if posterior.resource_pressure_models.spill_risk.mean > 0.6 {
-            graph_hints.push("Avoid deep fusion; register file saturation likely".to_string());
-        }
+    }
 
-        ExecutionPolicy {
-            rankings,
-            search_space,
-            pruning_factor,
-            graph_hints,
-            policy_confidence: posterior.confidence_breakdown.regime,
+    fn uncertainty(&self, workload: &WorkloadDesc) -> PriorUncertainty {
+        let report = self.evaluate(&workload.shape, workload.dtype, workload.calibration.clone()).unwrap();
+        PriorUncertainty {
+            kernel_entropy: report.inference.entropy_kernel(),
+            regime_entropy: report.inference.entropy_regime(),
+            calibrated_uncertainty: CalibratedUncertainty {
+                epistemic_uncertainty: report.uncertainty.epistemic,
+                aleatoric_uncertainty: report.uncertainty.aleatoric,
+                transfer_uncertainty: report.uncertainty.transfer,
+                sigma_runtime: report.inference.performance_posteriors.runtime_us.stddev,
+            },
+            confidence: report.inference.confidence_breakdown,
         }
     }
 
     fn update(&mut self, observation: &CalibrationFeedback) {
-        // Calculate the ratio of measured / predicted for this specific kernel execution
-        // If prediction is missing, assume 1.0 (no error)
         let ratio = if observation.predicted_runtime_us > 0.0 {
             observation.measured_runtime_us / observation.predicted_runtime_us
         } else {
             1.0
         };
-
         self.model.update_posterior(ratio);
+    }
+}
+
+impl<M: ProbabilisticModel> ProbabilisticHardwareOracle for HardwarePredictor<M> {
+    fn posterior(&self, workload: &WorkloadDesc) -> InferredState {
+        // Aggregate the prior stages into a legacy InferredState for backward compatibility
+        let mut obs = ArchObservables::from_compute_cap(self.arch.base);
+        let calib = workload.calibration.clone().unwrap_or_default();
+        obs.apply_coefficients(calib.flop_scale_coeff, calib.bw_scale_coeff);
+
+        let derived = DerivedProperties::from_observables(&obs);
+        let sig = self.model.estimate(&self.arch, &obs, &derived, &workload.shape, &calib);
+
+        let prior = PredictorPrior::evaluate(&self.arch, obs, derived, &workload.shape, workload.dtype, Some(calib), sig);
+        prior.inference
     }
 
     fn annotate_node(&self, workload: &WorkloadDesc, labels: &mut HashMap<String, String>) {
@@ -3052,9 +3087,13 @@ mod tests {
         assert_eq!(report.workload_observed.feasibility.effective_compute_dtype, DType::Fp16);
 
         // 4. Search Space Pruning
-        let policy = oracle.policy(&post, &TuningContext::default());
-        assert!(policy.pruning_factor > 10.0, "Oracle failed to provide significant pruning: {}", policy.pruning_factor);
-        println!("Ampere Pruning Factor: {:.1}x", policy.pruning_factor);
+        let strategy = oracle.strategy_prior(&workload);
+        let pruned_volume = strategy.search_space.volume();
+        let naive_volume = SearchSpace::naive_volume();
+        let pruning_factor = if pruned_volume > 0 { naive_volume as f32 / pruned_volume as f32 } else { 1.0 };
+
+        assert!(pruning_factor > 10.0, "Oracle failed to provide significant pruning: {}", pruning_factor);
+        println!("Ampere Pruning Factor: {:.1}x", pruning_factor);
     }
 
     #[test]

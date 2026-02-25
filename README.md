@@ -587,5 +587,55 @@ The system generates a **compile-time prior** (belief state) over the hardware's
 2. **Warm-Start Optimization**: Provide a calibrated starting point for Bayesian optimization.
 3. **Formalize Uncertainty**: Explicitly communicate epistemic (model) and aleatoric (system) variance.
 
+### Pipeline Integration
+
+CudaForge fits into a modern compiler pipeline as a specialized **Analytical Prior Stage**:
+
+```
+        ┌────────────────────────────┐
+        │   Frontend Graph / IR      │
+        │  (Candle / Luminal / etc.) │
+        └──────────────┬─────────────┘
+                       │
+                       ▼
+        ┌────────────────────────────┐
+        │   Kernel Decomposition     │
+        │  - tiling candidates       │
+        │  - fusion opportunities    │
+        │  - memory layouts          │
+        └──────────────┬─────────────┘
+                       │
+                       ▼
+        ┌────────────────────────────┐
+        │   CUDAForge PRIOR STAGE    │  <-- TON MODULE
+        │                            │
+        │  Hardware-conditioned      │
+        │  analytical inference      │
+        │                            │
+        │  Outputs:                  │
+        │  - feasible regimes        │
+        │  - scaling laws            │
+        │  - prior over strategies   │
+        │  - uncertainty metrics     │
+        └──────────────┬─────────────┘
+                       │
+                       ▼
+        ┌────────────────────────────┐
+        │   Search Space Pruning     │
+        │                            │
+        │  - eliminate impossible    │
+        │  - bias exploration        │
+        │  - seed schedule params    │
+        └──────────────┬─────────────┘
+                       │
+                       ▼
+        ┌────────────────────────────┐
+        │   Autotuning Search Loop   │
+        │                            │
+        │  - evolutionary search     │
+        │  - Bayesian optimization   │
+        └──────────────┬─────────────┘
+```
+
 ### Physical Realism
 CudaForge's models are physically constrained (e.g., capping scheduler pressure at 0.85) to avoid non-physical "perfect" saturation claims common in simplistic roofline models.
