@@ -637,5 +637,18 @@ CudaForge fits into a modern compiler pipeline as a specialized **Analytical Pri
         └──────────────┬─────────────┘
 ```
 
+### Bayesian Formulation
+
+CudaForge formalizes performance prediction as a hierarchical probabilistic inference problem:
+
+```math
+P(Runtime | Workload, Arch) = \sum_{Regime} \sum_{Kernel} P(Runtime | Kernel, Regime, Workload, Arch) P(Kernel | Regime, Arch) P(Regime | Workload, Arch)
+```
+
+Where:
+- **Regime Posterior**: Analytical inference of execution bounds (Compute vs. Memory).
+- **Kernel Conditional Prior**: Hardware-conditioned probability of strategy suitability.
+- **Runtime Likelihood**: Performance distribution given a strategy and regime.
+
 ### Physical Realism
 CudaForge's models are physically constrained (e.g., capping scheduler pressure at 0.85) to avoid non-physical "perfect" saturation claims common in simplistic roofline models.
