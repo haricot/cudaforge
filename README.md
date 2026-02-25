@@ -587,5 +587,68 @@ The system generates a **compile-time prior** (belief state) over the hardware's
 2. **Warm-Start Optimization**: Provide a calibrated starting point for Bayesian optimization.
 3. **Formalize Uncertainty**: Explicitly communicate epistemic (model) and aleatoric (system) variance.
 
+### Pipeline Integration
+
+CudaForge fits into a modern compiler pipeline as a specialized **Analytical Prior Stage**:
+
+```
+        ┌────────────────────────────┐
+        │   Frontend Graph / IR      │
+        │  (Candle / Luminal / etc.) │
+        └──────────────┬─────────────┘
+                       │
+                       ▼
+        ┌────────────────────────────┐
+        │   Kernel Decomposition     │
+        │  - tiling candidates       │
+        │  - fusion opportunities    │
+        │  - memory layouts          │
+        └──────────────┬─────────────┘
+                       │
+                       ▼
+        ┌────────────────────────────┐
+        │   CUDAForge PRIOR STAGE    │  <-- TON MODULE
+        │                            │
+        │  Hardware-conditioned      │
+        │  analytical inference      │
+        │                            │
+        │  Outputs:                  │
+        │  - feasible regimes        │
+        │  - scaling laws            │
+        │  - prior over strategies   │
+        │  - uncertainty metrics     │
+        └──────────────┬─────────────┘
+                       │
+                       ▼
+        ┌────────────────────────────┐
+        │   Search Space Pruning     │
+        │                            │
+        │  - eliminate impossible    │
+        │  - bias exploration        │
+        │  - seed schedule params    │
+        └──────────────┬─────────────┘
+                       │
+                       ▼
+        ┌────────────────────────────┐
+        │   Autotuning Search Loop   │
+        │                            │
+        │  - evolutionary search     │
+        │  - Bayesian optimization   │
+        └──────────────┬─────────────┘
+```
+
+### Bayesian Formulation
+
+CudaForge formalizes performance prediction as a hierarchical probabilistic inference problem:
+
+```math
+P(Runtime | Workload, Arch) = \sum_{Regime} \sum_{Kernel} P(Runtime | Kernel, Regime, Workload, Arch) P(Kernel | Regime, Arch) P(Regime | Workload, Arch)
+```
+
+Where:
+- **Regime Posterior**: Analytical inference of execution bounds (Compute vs. Memory).
+- **Kernel Conditional Prior**: Hardware-conditioned probability of strategy suitability.
+- **Runtime Likelihood**: Performance distribution given a strategy and regime.
+
 ### Physical Realism
 CudaForge's models are physically constrained (e.g., capping scheduler pressure at 0.85) to avoid non-physical "perfect" saturation claims common in simplistic roofline models.

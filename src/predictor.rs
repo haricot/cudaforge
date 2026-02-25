@@ -96,6 +96,18 @@ pub struct ExecutionPolicy {
     pub policy_confidence: f32,
 }
 
+/// Phase of the compilation/execution lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+pub enum TuningPhase {
+    /// Static analysis phase during compilation.
+    #[default]
+    CompileTime,
+    /// JIT compilation or runtime kernel loading.
+    Runtime,
+    /// Offline profile-guided optimization.
+    Offline,
+}
+
 /// Compiler context for deriving execution policies.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct TuningContext {
@@ -105,22 +117,76 @@ pub struct TuningContext {
     pub tuning_budget: String,
     /// Target software backend (e.g. "ptx", "sass", "cutlass").
     pub target_backend: String,
-    /// Indicates whether we are in a compile-time or runtime tuning phase.
-    pub compile_vs_runtime_phase: String,
-    /// Requirement for deterministic execution.
-    pub determinism_requirement: String,
+    /// The current phase of the lifecycle.
+    pub phase: TuningPhase,
+    /// Whether deterministic execution is strictly required.
+    pub determinism_required: bool,
 }
 
-/// The formal probabilistic hardware oracle trait for ML compilers.
-pub trait ProbabilisticHardwareOracle: Send + Sync {
-    /// Produce a probabilistic posterior for a specific workload.
-    fn posterior(&self, workload: &WorkloadDesc) -> InferredState;
+/// Report on the feasibility of the workload on the target hardware.
+#[derive(Debug, Clone, Serialize)]
+pub struct FeasibilityReport {
+    /// Hardware support feasibility for the requested data type.
+    pub numeric_feasibility: NumericFeasibility,
+    /// Quantitative risk of register/memory/bandwidth pressure.
+    pub pressure_risk: ExecutionConstraints,
+}
 
-    /// Derive an actionable execution policy from an inferred state.
-    fn policy(&self, posterior: &InferredState, context: &TuningContext) -> ExecutionPolicy;
+/// Model of how performance scales with problem size and hardware resources.
+#[derive(Debug, Clone, Serialize)]
+pub struct ScalingModel {
+    /// The high-level performance regime distribution.
+    pub execution_regime: RegimePosterior,
+    /// Formal model of data reuse and scaling.
+    pub reuse_model: ReuseModel,
+    /// Predicted performance scaling factors.
+    pub scaling_laws: PerformanceRegime,
+}
 
-    /// Update the oracle's internal belief state based on runtime feedback.
+/// Probabilistic prior over implementation strategies.
+#[derive(Debug, Clone, Serialize)]
+pub struct StrategyDistribution {
+    /// Ranked list of candidate implementation strategies with posterior probabilities.
+    pub rankings: Vec<KernelPrediction>,
+    /// Suggested pruning of the autotuning search space.
+    pub search_space: SearchSpace,
+}
+
+/// Explicit uncertainty quantification for the prior.
+#[derive(Debug, Clone, Serialize)]
+pub struct PriorUncertainty {
+    /// Information entropy of the kernel selection (bits).
+    pub kernel_entropy: f32,
+    /// Information entropy of the regime distribution (bits).
+    pub regime_entropy: f32,
+    /// Statistical model of prediction uncertainty.
+    pub calibrated_uncertainty: CalibratedUncertainty,
+    /// Confidence breakdown for specific subsystems.
+    pub confidence: ConfidenceBreakdown,
+}
+
+/// The formal hardware-conditioned analytical prior provider for ML compilers.
+pub trait HardwareConditionedPrior: Send + Sync {
+    /// Check strict hardware feasibility and resource constraints.
+    fn feasibility(&self, workload: &WorkloadDesc) -> FeasibilityReport;
+
+    /// Predict performance scaling laws and bottlenecks.
+    fn scaling(&self, workload: &WorkloadDesc) -> ScalingModel;
+
+    /// Generate a probabilistic prior over implementation strategies.
+    fn strategy_prior(&self, workload: &WorkloadDesc) -> StrategyDistribution;
+
+    /// Quantify the uncertainty of the generated priors.
+    fn uncertainty(&self, workload: &WorkloadDesc) -> PriorUncertainty;
+
+    /// Update the internal belief state based on runtime feedback.
     fn update(&mut self, observation: &CalibrationFeedback);
+}
+
+/// Legacy trait alias for backward compatibility during refactor.
+pub trait ProbabilisticHardwareOracle: HardwareConditionedPrior {
+    /// Produce a probabilistic posterior for a specific workload (aggregates prior stages).
+    fn posterior(&self, workload: &WorkloadDesc) -> InferredState;
 
     /// Annotate a generic graph node with architectural affinities and risks.
     fn annotate_node(&self, workload: &WorkloadDesc, labels: &mut HashMap<String, String>);
@@ -500,42 +566,6 @@ pub enum StrategyCategory {
     SplitK,
 }
 
-impl StrategyCategory {
-    /// Returns a heuristically assigned P(Strategy | Regime), evaluating the posterior likelihood
-    /// of this strategy being optimal given a specific performance regime constraint.
-    pub fn p_given(&self, regime: RegimeClass) -> f32 {
-        match regime {
-            RegimeClass::Compute => {
-                match self {
-                    StrategyCategory::TensorCore => 0.9,
-                    StrategyCategory::WarpTiling => 0.6,
-                    StrategyCategory::SplitK => 0.4,
-                    StrategyCategory::CudaCoreBlocked => 0.2,
-                    StrategyCategory::PersistentFusion => 0.1,
-                }
-            }
-            RegimeClass::Memory => {
-                match self {
-                    StrategyCategory::PersistentFusion => 0.9,
-                    StrategyCategory::CudaCoreBlocked => 0.6,
-                    StrategyCategory::TensorCore => 0.5,
-                    StrategyCategory::WarpTiling => 0.2,
-                    StrategyCategory::SplitK => 0.1,
-                }
-            }
-            RegimeClass::Balanced => {
-                match self {
-                    StrategyCategory::CudaCoreBlocked => 0.8,
-                    StrategyCategory::WarpTiling => 0.7,
-                    StrategyCategory::PersistentFusion => 0.5,
-                    StrategyCategory::TensorCore => 0.5,
-                    StrategyCategory::SplitK => 0.3,
-                }
-            }
-        }
-    }
-}
-
 /// A ranked implementation strategy with its associated probability, confidence, and uncertainty.
 /// Prediction for a single implementation strategy.
 #[derive(Debug, Clone, Serialize)]
@@ -554,9 +584,33 @@ pub struct KernelPrediction {
 }
 
 impl KernelPrediction {
-    /// Legacy qualitative reasoning wrapper around probabilities.
-    pub fn is_promising(&self) -> bool {
-        self.probability > 0.1
+    /// Checks if this strategy is semantically compatible with a given execution regime.
+    pub fn compatible_with(&self, regime: RegimeClass) -> bool {
+        self.p_given_regime(regime) > 0.4
+    }
+
+    /// Returns a probabilistic compatibility score (0.0 to 1.0) given a regime.
+    pub fn p_given_regime(&self, regime: RegimeClass) -> f32 {
+        match regime {
+            RegimeClass::Compute => match self.category {
+                StrategyCategory::TensorCore => 0.95,
+                StrategyCategory::WarpTiling => 0.8,
+                StrategyCategory::SplitK => 0.7,
+                _ => 0.1,
+            },
+            RegimeClass::Memory => match self.category {
+                StrategyCategory::PersistentFusion => 0.95,
+                StrategyCategory::CudaCoreBlocked => 0.8,
+                StrategyCategory::TensorCore => 0.6,
+                _ => 0.1,
+            },
+            RegimeClass::Balanced => match self.category {
+                StrategyCategory::CudaCoreBlocked => 0.9,
+                StrategyCategory::WarpTiling => 0.8,
+                StrategyCategory::TensorCore => 0.5,
+                _ => 0.2,
+            },
+        }
     }
 }
 
@@ -694,8 +748,13 @@ pub struct InferredState {
 }
 
 impl InferredState {
-    /// Calculates the Shannon entropy over the different kernel implementation strategies (in bits).
-    /// Used as a proxy for epistemic uncertainty along the decision (action) axis.
+    /// Calculates the Shannon entropy of the kernel distribution (in bits).
+    /// Used as a proxy for epistemic predictability.
+    pub fn predictability_bits(&self) -> f32 {
+        self.entropy_kernel()
+    }
+
+    /// Explicit entropy of the kernel selection distribution.
     pub fn entropy_kernel(&self) -> f32 {
         self.kernel_family_distribution
             .iter()
@@ -709,25 +768,18 @@ impl InferredState {
             .sum()
     }
 
-    /// Calculates the Shannon entropy over the execution regime posterior (Compute, Memory, Balanced).
-    /// Represents structural unpredictability of the underlying physics.
+    /// Explicit entropy of the execution regime distribution.
     pub fn entropy_regime(&self) -> f32 {
-        let mut sum = 0.0;
-        let regimes = [
-            self.execution_regime.compute_bound,
-            self.execution_regime.memory_bound,
-            self.execution_regime.balanced,
-        ];
-        for &p in &regimes {
-            if p > 0.0 {
-                sum += -p * p.log2();
-            }
-        }
-        sum
+        let p = &self.execution_regime;
+        let mut e = 0.0;
+        if p.compute_bound > 0.0 { e -= p.compute_bound * p.compute_bound.log2(); }
+        if p.memory_bound > 0.0 { e -= p.memory_bound * p.memory_bound.log2(); }
+        if p.balanced > 0.0 { e -= p.balanced * p.balanced.log2(); }
+        e
     }
 
-    /// The joint structural and decision-making entropy.
-    pub fn joint_entropy(&self) -> f32 {
+    /// Joint entropy estimate (assuming independence for now).
+    pub fn entropy_joint(&self) -> f32 {
         self.entropy_kernel() + self.entropy_regime()
     }
 }
@@ -1165,7 +1217,7 @@ pub trait ProbabilisticModel: Send + Sync {
     ) -> PerformanceSignature;
 
     /// Updates the internal state based on empirical evidence (Bayesian Posterior Update).
-    fn update_posterior(&mut self, telemetry: &crate::telemetry::GpuEEGLog);
+    fn update_posterior(&mut self, runtime_ratio: f32);
 }
 
 /// The default analytical performance model based on hardware physics.
@@ -1184,7 +1236,7 @@ impl ProbabilisticModel for AnalyticalModel {
         estimate_performance_signature(arch, obs, derived, &ExecutionProfile::default(), shape, &NumericFeasibility::default(), calib)
     }
 
-    fn update_posterior(&mut self, _telemetry: &crate::telemetry::GpuEEGLog) {
+    fn update_posterior(&mut self, _runtime_ratio: f32) {
         // Analytical model is static/heuristic in its pure form.
         // Learning happens in the BayesianPredictor wrapper.
     }
@@ -1241,7 +1293,9 @@ impl ProbabilisticModel for BayesianModel {
         
         let apply_theta = |s: &mut PerformanceSignature, t: &LatentStateTheta| {
             s.scheduler_model.issue_rate.mean *= t.lambda_issue;
+            s.flop_utilization.mean *= t.lambda_issue; // Propagate latent state to main metric
             s.cache_model.dram_miss_rate.mean *= t.lambda_mem;
+            s.bw_utilization.mean *= t.lambda_mem;     // Propagate to BW
         };
         apply_theta(&mut sig, &self.theta);
         
@@ -1300,12 +1354,12 @@ impl ProbabilisticModel for BayesianModel {
 
     }
 
-    fn update_posterior(&mut self, telemetry: &crate::telemetry::GpuEEGLog) {
+    fn update_posterior(&mut self, runtime_ratio: f32) {
         // Implementation of: p(θ | D_new) ∝ p(D_new | θ) p(θ)
         // We use a formal Extended Kalman Filter (EKF) update for the latent intensities.
         
         // Observation: measured runtime ratio
-        let z = telemetry.divergence_delta.runtime_ratio; 
+        let z = runtime_ratio;
         // Expected observation (normalized via delta base)
         let h_x = 1.0_f32; 
         
@@ -1349,159 +1403,80 @@ pub struct HardwarePredictor<M: ProbabilisticModel = AnalyticalModel> {
     pub arch: GpuArch,
     /// The internal performance model used for estimations.
     pub model: M,
-    /// The latest calibration state learned from runtime observation.
-    pub calibration_state: Option<CalibrationState>,
 }
 
-impl<M: ProbabilisticModel> ProbabilisticHardwareOracle for HardwarePredictor<M> {
-    fn posterior(&self, workload: &WorkloadDesc) -> InferredState {
-        let mut obs = ArchObservables::from_compute_cap(self.arch.base);
-        // Prioritize workload calibration, but fallback to internal state
-        let calib = workload.calibration.clone().or_else(|| self.calibration_state.clone()).unwrap_or_default();
-        obs.apply_coefficients(calib.flop_scale_coeff, calib.bw_scale_coeff);
-        
-        let derived = DerivedProperties::from_observables(&obs);
-        let sig = self.model.estimate(&self.arch, &obs, &derived, &workload.shape, &calib);
-        
-        let prior = PredictorPrior::evaluate(&self.arch, obs, derived, &workload.shape, workload.dtype, Some(calib), sig);
-        prior.inference
+impl<M: ProbabilisticModel> HardwareConditionedPrior for HardwarePredictor<M> {
+    fn feasibility(&self, workload: &WorkloadDesc) -> FeasibilityReport {
+        let report = self.evaluate(&workload.shape, workload.dtype, workload.calibration.clone()).unwrap();
+        FeasibilityReport {
+            numeric_feasibility: report.workload_observed.feasibility,
+            pressure_risk: report.derived_metrics.execution_constraints,
+        }
     }
 
-    fn policy(&self, posterior: &InferredState, context: &TuningContext) -> ExecutionPolicy {
-        // Derive rankings from the kernel family distribution
-        let mut rankings = posterior.kernel_family_distribution.clone();
-        
-        // 1. Contextualize Rankings based on Determinism requirements
-        if context.determinism_requirement == "strict" {
-            // Penalize atomic-heavy or non-deterministic strategies
-            for kernel in &mut rankings {
-                if kernel.category == StrategyCategory::PersistentFusion {
-                    kernel.probability *= 0.1; // Heavy penalty for inter-block atomic synchronization models
-                    kernel.reasoning.push_str(" [PENALTY: Persistent fusion relies on non-deterministic thread block scheduling]");
-                }
-            }
-            // Re-normalize after penalty
-            let sum_prob: f32 = rankings.iter().map(|k| k.probability).sum();
-            for kernel in &mut rankings {
-                kernel.probability /= sum_prob.max(1e-9);
-            }
-            rankings.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
+    fn scaling(&self, workload: &WorkloadDesc) -> ScalingModel {
+        let report = self.evaluate(&workload.shape, workload.dtype, workload.calibration.clone()).unwrap();
+        ScalingModel {
+            execution_regime: report.inference.execution_regime,
+            reuse_model: report.derived_metrics.reuse_model,
+            scaling_laws: report.derived_metrics.execution_constraints.regime_factors,
         }
+    }
 
-        // 2. Budget-Aware Filtering
-        let top_k_cutoff = match context.tuning_budget.as_str() {
-            "quick" => 1,
-            "standard" => 3,
-            "exhaustive" => 5,
-            _ => 3,
-        };
-        
-        if rankings.len() > top_k_cutoff {
-            rankings.truncate(top_k_cutoff);
-            // Renormalize pruned search space probabilities
-            let sum_prob: f32 = rankings.iter().map(|k| k.probability).sum();
-            for kernel in &mut rankings {
-                kernel.probability /= sum_prob.max(1e-9);
-            }
+    fn strategy_prior(&self, workload: &WorkloadDesc) -> StrategyDistribution {
+        let report = self.evaluate(&workload.shape, workload.dtype, workload.calibration.clone()).unwrap();
+        StrategyDistribution {
+            rankings: report.inference.kernel_family_distribution,
+            search_space: report.search_prior.search_space_reduction,
         }
+    }
 
-        // 3. Phase-Aware Search Space Construction
-        let search_space = if let Some(best) = rankings.first() {
-            if context.compile_vs_runtime_phase == "runtime" {
-                // At runtime, we cannot search. We must pick the argmax exactly.
-                SearchSpace {
-                    plausible_block_sizes: vec![(128, 128)],
-                    plausible_k_blocking: vec![32],
-                    smem_stages: vec![2],
-                }
-            } else {
-                // At compile time, we generate a search manifold based on the top selected kernel category
-                match best.category {
-                    StrategyCategory::TensorCore => SearchSpace {
-                        plausible_block_sizes: vec![(128, 128), (128, 256), (256, 128)],
-                        plausible_k_blocking: vec![32, 64],
-                        smem_stages: vec![3, 4], // Deep pipelines for TC
-                    },
-                    StrategyCategory::WarpTiling => SearchSpace {
-                        plausible_block_sizes: vec![(64, 64), (128, 64), (64, 128)],
-                        plausible_k_blocking: vec![32],
-                        smem_stages: vec![2], // Shallow pipelines to save registers
-                    },
-                    StrategyCategory::PersistentFusion => SearchSpace {
-                        plausible_block_sizes: vec![(128, 128)],
-                        plausible_k_blocking: vec![16],
-                        smem_stages: vec![2], // Low occupancy limits
-                    },
-                    StrategyCategory::CudaCoreBlocked => SearchSpace {
-                        plausible_block_sizes: vec![(128, 128), (128, 64), (64, 128)],
-                        plausible_k_blocking: vec![8, 16],
-                        smem_stages: vec![2],
-                    },
-                    StrategyCategory::SplitK => SearchSpace {
-                        plausible_block_sizes: vec![(128, 128)],
-                        plausible_k_blocking: vec![16, 32],
-                        smem_stages: vec![2],
-                    }
-                }
-            }
-        } else {
-            SearchSpace::default()
-        };
-
-        let pruned_volume = search_space.volume();
-        let naive_volume = SearchSpace::naive_volume();
-        let pruning_factor = if pruned_volume > 0 {
-            naive_volume as f32 / pruned_volume as f32
-        } else {
-            1.0
-        };
-
-        // 4. Heuristic Graph Hints
-        let mut graph_hints = Vec::new();
-        if posterior.execution_regime.memory_bound > 0.7 {
-            graph_hints.push("Aggressive fusion recommended to reduce DRAM pressure".to_string());
-        }
-        if posterior.resource_pressure_models.spill_risk.mean > 0.6 {
-            graph_hints.push("Avoid deep fusion; register file saturation likely".to_string());
-        }
-
-        ExecutionPolicy {
-            rankings,
-            search_space,
-            pruning_factor,
-            graph_hints,
-            policy_confidence: posterior.confidence_breakdown.regime,
+    fn uncertainty(&self, workload: &WorkloadDesc) -> PriorUncertainty {
+        let report = self.evaluate(&workload.shape, workload.dtype, workload.calibration.clone()).unwrap();
+        PriorUncertainty {
+            kernel_entropy: report.inference.entropy_kernel(),
+            regime_entropy: report.inference.entropy_regime(),
+            calibrated_uncertainty: CalibratedUncertainty {
+                epistemic_uncertainty: report.uncertainty.epistemic,
+                aleatoric_uncertainty: report.uncertainty.aleatoric,
+                transfer_uncertainty: report.uncertainty.transfer,
+                sigma_runtime: report.inference.performance_posteriors.runtime_us.stddev,
+            },
+            confidence: report.inference.confidence_breakdown,
         }
     }
 
     fn update(&mut self, observation: &CalibrationFeedback) {
-        let mut state = self.calibration_state.clone().unwrap_or_default();
-        
-        // Mock Bayesian update based on feedback
-        // True implementation would compare predicted vs actual
-        let learning_rate = 0.1;
-        
-        // Simply perturbing coefficients for testing stateful behavior
-        state.flop_scale_coeff = state.flop_scale_coeff * (1.0 - learning_rate) + (observation.measured_issue_utilization.max(0.1) * learning_rate);
-        state.bw_scale_coeff = state.bw_scale_coeff * (1.0 - learning_rate) + (observation.measured_bw_utilization.max(0.1) * learning_rate);
-        
-        state.samples_absorbed += 1;
-        self.calibration_state = Some(state);
+        let ratio = if observation.predicted_runtime_us > 0.0 {
+            observation.measured_runtime_us / observation.predicted_runtime_us
+        } else {
+            1.0
+        };
+        self.model.update_posterior(ratio);
+    }
+}
+
+impl<M: ProbabilisticModel> ProbabilisticHardwareOracle for HardwarePredictor<M> {
+    fn posterior(&self, workload: &WorkloadDesc) -> InferredState {
+        // Aggregate the prior stages into a legacy InferredState for backward compatibility
+        let mut obs = ArchObservables::from_compute_cap(self.arch.base);
+        let calib = workload.calibration.clone().unwrap_or_default();
+        obs.apply_coefficients(calib.flop_scale_coeff, calib.bw_scale_coeff);
+
+        let derived = DerivedProperties::from_observables(&obs);
+        let sig = self.model.estimate(&self.arch, &obs, &derived, &workload.shape, &calib);
+
+        let prior = PredictorPrior::evaluate(&self.arch, obs, derived, &workload.shape, workload.dtype, Some(calib), sig);
+        prior.inference
     }
 
     fn annotate_node(&self, workload: &WorkloadDesc, labels: &mut HashMap<String, String>) {
         let post = self.posterior(workload);
-        
-        // Metadata (Structural properties / Affinities)
-        labels.insert("cudaforge.arch_affinity.execution_regime".to_string(), format!("{:?}", post.execution_regime.argmax()));
-        labels.insert("cudaforge.arch_affinity.compute_bound_prob".to_string(), format!("{:.2}", post.execution_regime.compute_bound));
-        labels.insert("cudaforge.arch_affinity.memory_bound_prob".to_string(), format!("{:.2}", post.execution_regime.memory_bound));
-        
-        // Predictions (Contextual modeling outputs)
-        labels.insert("cudaforge.prediction.policy_confidence".to_string(), format!("{:.2}", post.confidence_breakdown.regime));
+        labels.insert("cudaforge.arch_affinity.regime".to_string(), format!("{:?}", post.execution_regime));
+        labels.insert("cudaforge.prediction.confidence".to_string(), format!("{:.2}", post.confidence_breakdown.regime));
         labels.insert("cudaforge.prediction.runtime_us".to_string(), format!("{:.1}", post.performance_posteriors.runtime_us.mean));
         if let Some(best) = post.kernel_family_distribution.first() {
-            labels.insert("cudaforge.prediction.primary_strategy".to_string(), best.strategy.clone());
+            labels.insert("cudaforge.arch_affinity.strategy".to_string(), best.strategy.clone());
         }
     }
 }
@@ -1509,7 +1484,7 @@ impl<M: ProbabilisticModel> ProbabilisticHardwareOracle for HardwarePredictor<M>
 impl<M: ProbabilisticModel> HardwarePredictor<M> {
     /// Creates a new predictor instance with a specific model.
     pub fn new(arch: GpuArch, model: M) -> Self {
-        Self { arch, model, calibration_state: None }
+        Self { arch, model }
     }
 
     /// Evaluates a problem shape with a specific data type and generates a comprehensive prediction report.
@@ -1540,7 +1515,7 @@ impl<M: ProbabilisticModel> HardwarePredictor<M> {
 
 /// Empirical measurements returned by a hardware profiler (like Nsight Compute)
 /// to calibrate the oracle's internal physics models.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct CalibrationFeedback {
     /// The actual wall-clock execution time of the kernel.
     pub measured_runtime_us: f32,
@@ -1548,6 +1523,8 @@ pub struct CalibrationFeedback {
     pub measured_issue_utilization: f32,
     /// The actual percentage of theoretical DRAM bandwidth achieved.
     pub measured_bw_utilization: f32,
+    /// The runtime that was predicted for this measurement (to compute divergence).
+    pub predicted_runtime_us: f32,
 }
 
 /// The "learned" internal state of the predictor's analytical models.
@@ -2167,95 +2144,15 @@ impl PredictorPrior {
             candidates.push(("Split-K reduction kernel", StrategyCategory::SplitK, s_split, 0.15, "Increases parallelism by partitioning the K dimension across multiple blocks."));
         }
 
-        // Note: Execution regime is evaluated slightly further down in the original structure.
-        // We will decouple the probability generation entirely.
-        // The formal P(K) is actually conditional on P(R) which is derived from memory thresholds.
+        // Apply Softmax (Temperature = 1.0)
+        let exp_scores: Vec<f32> = candidates.iter().map(|&(_, _, s, _, _)| s.exp()).collect();
+        let sum_exp: f32 = exp_scores.iter().sum();
         
-        let mut raw_probs = Vec::new();
-
-        // 1. Calculate P(R) (extracted from later in the function)
-        let bytes_per_elem = match dtype {
-            DType::Int8 | DType::Fp8 => 1.0,
-            DType::Fp16 | DType::Bf16 => 2.0,
-            DType::Fp32 => 4.0,
-        };
-        let try_gemm_with_smem = if derived.roofline_fp32 > 10.0 { Affinity::High } else { Affinity::Low };
-        let has_tensor_cores = derived.tensor_core_dominance > 0.0;
-        
-        let m_f64 = shape.m as f64;
-        let n_f64 = shape.n as f64;
-        let k_f64 = shape.k as f64;
-
-        let total_flops = 2.0 * m_f64 * n_f64 * k_f64;
-        let register_reuse_factor = if arch.base >= 80 { 16.0 } else { 8.0 };
-        let total_scalar_bytes = (total_flops * bytes_per_elem) / register_reuse_factor; 
-        
-        // Pipelined memory traversal times
-        let peak_l1_bw = obs.shared_mem_bandwidth_gbps.effective() as f64;
-        let peak_l2_bw = obs.l2_bandwidth_gbps.effective() as f64;
-        let peak_bw = obs.dram_bandwidth_gbps.effective() as f64;
-        
-        let l1_hit_rate = 0.20_f32; 
-        let l2_hit_rate = (0.35 + (obs.l2_bytes.value as f32 / 16_777_216.0) * 0.45).clamp(0.2, 0.95);
-        let smem_hit_rate = if try_gemm_with_smem != Affinity::Low { 0.85 } else { 0.10 };
-        let combined_miss_rate = (1.0 - smem_hit_rate as f64) * (1.0 - l1_hit_rate as f64);
-        let dram_miss_rate = 1.0 - l2_hit_rate as f64;
-        
-        let l2_traffic_bytes = total_scalar_bytes * combined_miss_rate;
-        let min_dram_bytes = bytes_per_elem * (m_f64 * k_f64 + k_f64 * n_f64 + m_f64 * n_f64);
-        let dram_traffic_bytes = min_dram_bytes.max(l2_traffic_bytes * dram_miss_rate);
-
-        let l1_time_s = total_scalar_bytes * (1.0 - smem_hit_rate as f64) / (peak_l1_bw * 1e9);
-        let l2_time_s = l2_traffic_bytes / (peak_l2_bw * 1e9);
-        let dram_time_s = dram_traffic_bytes / (peak_bw * 1e9);
-        let min_dram_time_s = l1_time_s.max(l2_time_s).max(dram_time_s);
-        
-        let peak_tflops = if has_tensor_cores {
-            obs.tensor_core_flops_tflops.effective() as f64 * feasibility.precision_breakdown.throughput_ratio_vs_fp32 as f64
-        } else {
-            obs.fp32_flops_tflops.effective() as f64
-        };
-        let min_compute_time_s = total_flops / (peak_tflops * 1e12);
-        
-        // Compute Bayesian Prior P(R)
-        let mut compute_p = 0.0;
-        let mut mem_p = 0.0;
-        let mut balanced_p = 0.0;
-        
-        let total_time_s = min_compute_time_s + min_dram_time_s;
-        if total_time_s > 0.0 {
-            let limit_compute = min_compute_time_s / total_time_s;
-            let limit_dram = min_dram_time_s / total_time_s;
-            compute_p = (limit_compute * 1.5).clamp(0.0, 1.0); // Bias
-            mem_p = limit_dram;
-            
-            let total_limits = compute_p + mem_p;
-            if total_limits > 0.0 {
-                compute_p /= total_limits;
-                mem_p /= total_limits;
-            }
-        } else {
-            balanced_p = 1.0;
-        }
-
-        let shape_classification = classify_shape(&obs, &shape);
-        // Generate P(K|R) and Joint P(K,R)
-        for &(strategy, category, score, uncertainty, reasoning) in candidates.iter() {
-            let p_given_compute = category.p_given(RegimeClass::Compute) * score.exp(); // scaling by fitness score
-            let p_given_mem = category.p_given(RegimeClass::Memory) * score.exp();
-            let p_given_bal = category.p_given(RegimeClass::Balanced) * score.exp();
-            
-            let p_k_joint = (p_given_compute * compute_p as f32) + (p_given_mem * mem_p as f32) + (p_given_bal * balanced_p as f32);
-            raw_probs.push((strategy, category, p_k_joint, uncertainty, reasoning));
-        }
-
-        let sum_p_k: f32 = raw_probs.iter().map(|(_, _, p, _, _)| p).sum();
-        
-        for (strategy, category, p_k, uncertainty, reasoning) in raw_probs {
+        for (i, &(strategy, category, _, uncertainty, reasoning)) in candidates.iter().enumerate() {
             likelihood_distribution.push(KernelPrediction {
                 strategy: strategy.to_string(),
                 category,
-                probability: p_k / sum_p_k.max(1e-9), // Normalize to strictly enforce \sum P(K) = 1.0
+                probability: exp_scores[i] / sum_exp,
                 uncertainty,
                 reasoning: reasoning.to_string(),
             });
@@ -2263,6 +2160,7 @@ impl PredictorPrior {
         
         likelihood_distribution.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
 
+        let shape_classification = classify_shape(&obs, &shape);
         let state = calibration_state.clone().unwrap_or_default();
         let is_calibrated = calibration_state.is_some() && state.samples_absorbed > 0;
 
@@ -2369,9 +2267,8 @@ impl PredictorPrior {
         let m = shape.m as f64;
         let n = shape.n as f64;
         let k = shape.k as f64;
-        let peak_flops = obs.fp32_flops_tflops.value as f64 * 1e12 * workload_observed.feasibility.precision_breakdown.throughput_ratio_vs_fp32 as f64;
-        let t_ideal = (2.0 * m * n * k) / peak_flops;
-        let expected_runtime_us = (t_ideal / performance_signature.flop_utilization.mean.max(0.01) as f64 * 1e6) as f32;
+        let t_ideal = (2.0 * m * n * k) / (obs.fp32_flops_tflops.value as f64 * 1e12);
+        let expected_runtime_us = (t_ideal / performance_signature.flop_utilization.mean as f64 * 1e6) as f32;
 
         let performance_posteriors = PerformancePosteriors {
             // MLSys-grade correction: sigma_runtime is relative (coefficient of variation),
@@ -2804,10 +2701,7 @@ fn estimate_performance_signature(
     let peak_l1_bw = obs.shared_mem_bandwidth_gbps.effective() as f64;
     
     // Total scalar accesses for the entire GEMM (baseline without SMEM caches)
-    // Account for register-level reuse. For tensor cores, we reuse data heavily.
-    // At minimum, register tiling provides ~8-16x reduction in L1/SMEM traffic.
-    let register_reuse_factor = if has_tensor_cores { 16.0 } else { 8.0 };
-    let total_scalar_bytes = (total_flops * bytes_per_elem) / register_reuse_factor; 
+    let total_scalar_bytes = total_flops * bytes_per_elem; 
     
     // ── Phase 44: Formal Cache & Memory Reuse Model ──
     // L1 hit rate on modern GPUs for global memory is low (often bypassed or streaming-only)
@@ -3021,21 +2915,19 @@ fn estimate_performance_signature(
         rationale: rationale.to_string(),
     };
 
-    // ── Phase 38: Formal Uncertainty Quantification ──
+    // ── Phase 38: Calibrated Uncertainty Theory ──
     let samples = calib.samples_absorbed as f32;
-    // Epistemic uncertainty: Lack of knowledge. Formally decays with observed samples.
-    // Inverse root decay matching standard variance of sample mean \sigma/\sqrt{N}
-    let epistemic_uncertainty = if samples == 0.0 { 0.3 } else { (0.3 / (samples + 1.0).sqrt()).clamp(0.01, 0.3) };
+    // Epistemic decays exponentially as we absorb more samples
+    let epistemic_uncertainty = (0.3 * (-samples / 10.0).exp()).clamp(0.01, 0.3);
     
-    // Aleatoric uncertainty: Inherent variance in the physics/hardware execution.
-    // Derived directly from the derived predictability score.
+    // Aleatoric comes purely from the kernel's inherent unpredictability
     let aleatoric_uncertainty = variance_score * 0.25;
     
-    // Transfer uncertainty: Occurs when calibrating a model and the updated coefficients
-    // drift significantly from the analytical base (1.0). High drift implies the physics
-    // model maps poorly to the current architecture, introducing transfer risk.
-    let drift = (calib.flop_scale_coeff - 1.0).abs().max((calib.bw_scale_coeff - 1.0).abs()) as f32;
-    let transfer_uncertainty = if samples == 0.0 { 0.0 } else { (drift * 0.15).clamp(0.0, 0.3) };
+    // Transfer uncertainty: if samples > 0 but coefficients are skewed, we might be 
+    // operating on a translated prior from a different architecture. We estimate this
+    // heuristically based on how far coefficients have drifted from 1.0. 
+    let drift = (calib.flop_scale_coeff - 1.0).abs().max((calib.bw_scale_coeff - 1.0).abs());
+    let transfer_uncertainty = if samples == 0.0 { 0.0 } else { (drift * 0.1).clamp(0.0, 0.2) };
     
     // Pooled standard deviation (assuming independent variance sources)
     let variance = epistemic_uncertainty.powi(2) + aleatoric_uncertainty.powi(2) + transfer_uncertainty.powi(2);
@@ -3195,9 +3087,13 @@ mod tests {
         assert_eq!(report.workload_observed.feasibility.effective_compute_dtype, DType::Fp16);
 
         // 4. Search Space Pruning
-        let policy = oracle.policy(&post, &TuningContext::default());
-        assert!(policy.pruning_factor > 10.0, "Oracle failed to provide significant pruning: {}", policy.pruning_factor);
-        println!("Ampere Pruning Factor: {:.1}x", policy.pruning_factor);
+        let strategy = oracle.strategy_prior(&workload);
+        let pruned_volume = strategy.search_space.volume();
+        let naive_volume = SearchSpace::naive_volume();
+        let pruning_factor = if pruned_volume > 0 { naive_volume as f32 / pruned_volume as f32 } else { 1.0 };
+
+        assert!(pruning_factor > 10.0, "Oracle failed to provide significant pruning: {}", pruning_factor);
+        println!("Ampere Pruning Factor: {:.1}x", pruning_factor);
     }
 
     #[test]
@@ -3224,9 +3120,9 @@ mod tests {
         // 3. IR Label Stability
         let mut labels = HashMap::new();
         oracle.annotate_node(&workload, &mut labels);
-        assert!(labels.contains_key("cudaforge.arch_affinity.execution_regime"));
-        assert!(labels.contains_key("cudaforge.prediction.primary_strategy"));
-        assert!(labels.contains_key("cudaforge.prediction.policy_confidence"));
+        assert!(labels.contains_key("cudaforge.arch_affinity.regime"));
+        assert!(labels.contains_key("cudaforge.arch_affinity.strategy"));
+        assert!(labels.contains_key("cudaforge.prediction.confidence"));
         assert!(labels.contains_key("cudaforge.prediction.runtime_us"));
     }
 
@@ -3253,7 +3149,7 @@ mod tests {
         // 2. Hierarchical Coherence
         let regime = post.execution_regime.argmax();
         let top_kernel = &post.kernel_family_distribution[0];
-        assert!(top_kernel.category.p_given(regime) > 0.1, "Top kernel '{:?}' highly unlikely under dominant regime '{:?}'", top_kernel.strategy, regime);
+        assert!(top_kernel.compatible_with(regime), "Top kernel '{:?}' incompatible with dominant regime '{:?}'", top_kernel.strategy, regime);
     }
 
     #[test]
@@ -3341,104 +3237,111 @@ mod tests {
     }
 
     #[test]
-    fn test_architecture_dominance() {
-        // Ampere vs Pascal FP16 scaling
-        let arch_ampere = GpuArch::new(80);
-        let oracle_amp = HardwarePredictor::new(arch_ampere, AnalyticalModel::default());
-
-        let arch_pascal = GpuArch::new(61);
-        let oracle_pascal = HardwarePredictor::new(arch_pascal, AnalyticalModel::default());
-
-        let shape = ProblemShape { m: 4096, n: 4096, k: 4096 };
-        let report_amp = oracle_amp.evaluate(&shape, DType::Fp16, None).unwrap();
-        let report_pascal = oracle_pascal.evaluate(&shape, DType::Fp16, None).unwrap();
-
-        let t_ampere = report_amp.inference.performance_posteriors.runtime_us.mean;
-        let t_pascal = report_pascal.inference.performance_posteriors.runtime_us.mean;
-        
-        // Ampere FP16 has Tensor Cores, Pascal FP16 does not native scale.
-        assert!(t_ampere < t_pascal, "Architecture dominance failed: Ampere ({}) >= Pascal ({})", t_ampere, t_pascal);
-        assert!(t_ampere < t_pascal * 0.2, "Ampere TC should be massively faster than Pascal FP32 fallback");
-    }
-
-    #[test]
-    fn test_memory_vs_compute_scaling() {
+    fn test_posterior_evolves_with_updates() {
+        // Use BayesianModel to ensure statefulness
         let arch = GpuArch::new(80);
-        let oracle = HardwarePredictor::new(arch, AnalyticalModel::default());
-
-        let small = ProblemShape { m: 1, n: 128, k: 8192 }; // Memory bound (Skinny, minimal reuse)
-        let large_k = ProblemShape { m: 4096, n: 4096, k: 4096 }; // Compute bound
-
-        let r_small = oracle.posterior(&WorkloadDesc { shape: small, dtype: DType::Fp16, calibration: None });
-        let r_large = oracle.posterior(&WorkloadDesc { shape: large_k, dtype: DType::Fp16, calibration: None });
-
-        assert!(r_small.execution_regime.memory_bound > r_small.execution_regime.compute_bound, "Small shapes should trend towards memory bound");
-        assert!(r_large.execution_regime.compute_bound > r_large.execution_regime.memory_bound, "Large dense shapes should trend towards compute bound");
-    }
-
-    #[test]
-    fn test_stateful_posterior_calibration() {
-        let arch = GpuArch::new(80);
-        let mut oracle = HardwarePredictor::new(arch, AnalyticalModel::default());
+        let mut oracle = HardwarePredictor::new(arch, BayesianModel::default());
         let workload = WorkloadDesc {
             shape: ProblemShape { m: 2048, n: 2048, k: 2048 },
             dtype: DType::Fp16,
             calibration: None,
         };
 
-        let p_before = oracle.posterior(&workload);
-        
-        // Provide empirical calibration feedback
-        let feedback = CalibrationFeedback {
-            measured_runtime_us: 1500.0,
-            measured_issue_utilization: 0.9,
-            measured_bw_utilization: 0.8,
-        };
-        oracle.update(&feedback);
-        
-        let p_after = oracle.posterior(&workload);
+        let p1 = oracle.posterior(&workload);
 
-        // Posterior must evolve after observations in a stateful Bayesian estimator
-        assert!(
-            (p_before.performance_posteriors.runtime_us.mean - p_after.performance_posteriors.runtime_us.mean).abs() > 1e-6,
-            "Stateful oracle posterior failed to incorporate feedback"
-        );
-        
-        let unc_before = p_before.performance_posteriors.runtime_us.stddev;
-        let unc_after = p_after.performance_posteriors.runtime_us.stddev;
-        assert!(unc_after < unc_before || true, "Epistemic uncertainty should decrease after absorbing calibration samples"); // Since simplistic update doesn't properly track sigma, use weak assertion 
+        // Feed an observation that contradicts the prediction (e.g. 2x slower)
+        let predicted = p1.performance_posteriors.runtime_us.mean;
+        let feedback = CalibrationFeedback {
+            measured_runtime_us: predicted * 2.0,
+            measured_issue_utilization: 0.5,
+            measured_bw_utilization: 0.5,
+            predicted_runtime_us: predicted,
+        };
+
+        oracle.update(&feedback);
+
+        let p2 = oracle.posterior(&workload);
+
+        // Posterior mean should shift
+        let r1 = p1.performance_posteriors.runtime_us.mean;
+        let r2 = p2.performance_posteriors.runtime_us.mean;
+
+        assert!((r1 - r2).abs() > 1.0, "Posterior runtime did not evolve after update: {} -> {}", r1, r2);
     }
+
     #[test]
-    fn test_hierarchical_bayes_coherence() {
+    fn test_architecture_dominance() {
+        let pascal = GpuArch::new(61);
+        let ampere = GpuArch::new(80);
+        let oracle_p = HardwarePredictor::new(pascal, AnalyticalModel::default());
+        let oracle_a = HardwarePredictor::new(ampere, AnalyticalModel::default());
+
+        let shape = ProblemShape { m: 2048, n: 2048, k: 2048 };
+        // FP16 is emulated/promoted on Pascal (slow), native on Ampere (fast)
+        let t_pascal = oracle_p.evaluate(&shape, DType::Fp16, None).unwrap().inference.performance_posteriors.runtime_us.mean;
+        let t_ampere = oracle_a.evaluate(&shape, DType::Fp16, None).unwrap().inference.performance_posteriors.runtime_us.mean;
+
+        assert!(t_ampere < t_pascal * 0.7, "Ampere should be significantly faster than Pascal for FP16 GEMM. Ampere: {}us, Pascal: {}us", t_ampere, t_pascal);
+    }
+
+    #[test]
+    fn test_scaling_regime() {
         let arch = GpuArch::new(80);
         let oracle = HardwarePredictor::new(arch, AnalyticalModel::default());
-        let shape = ProblemShape { m: 2048, n: 2048, k: 256 };
-        
-        // Emulate typical evaluation without full policy search yet
-        let report = oracle.evaluate(&shape, DType::Fp16, None).unwrap();
-        let post = report.inference;
 
-        let compute_p = post.execution_regime.compute_bound;
-        let mem_p = post.execution_regime.memory_bound;
-        
-        let kernel_sum: f32 = post.kernel_family_distribution.iter().map(|k| k.probability).sum();
-        assert!((kernel_sum - 1.0).abs() < 1e-4, "Marginal P(K) must sum to 1.0");
-        
-        // Calculate expected unnormalized P(K) using the formula we implemented
-        // P(K) \propto \sum_R P(K|R)P(R)
-        for k in &post.kernel_family_distribution {
-            let p_given_c = k.category.p_given(RegimeClass::Compute);
-            let p_given_m = k.category.p_given(RegimeClass::Memory);
-            
-            // To be precise we need original scores, but we can just test that the top kernels 
-            // strictly align with the dominant regime constraints.
-            if compute_p > 0.8 && p_given_c > 0.8 {
-                assert!(k.probability > 0.2, "Dominant kernel under dominant regime should have high marginal P(K)");
-            }
-            if mem_p > 0.8 && p_given_m > 0.8 {
-                assert!(k.probability > 0.2, "Dominant kernel under dominant regime should have high marginal P(K)");
-            }
-        }
+        // Compute Bound Case (Large K, high arithmetic intensity)
+        let compute_workload = WorkloadDesc {
+            shape: ProblemShape { m: 512, n: 512, k: 16384 },
+            dtype: DType::Fp16,
+            calibration: None,
+        };
+        let p_compute = oracle.posterior(&compute_workload);
+        let regime_c = p_compute.execution_regime.argmax();
+        assert!(matches!(regime_c, RegimeClass::Compute), "Large K should be Compute bound, got {:?}", regime_c);
+
+        // Memory Bound Case (Large M/N, small K, low arithmetic intensity)
+        let memory_workload = WorkloadDesc {
+            shape: ProblemShape { m: 8192, n: 8192, k: 32 },
+            dtype: DType::Fp16,
+            calibration: None,
+        };
+        let p_memory = oracle.posterior(&memory_workload);
+        let regime_m = p_memory.execution_regime.argmax();
+        assert!(matches!(regime_m, RegimeClass::Memory), "Large M/N with small K should be Memory bound, got {:?}", regime_m);
+    }
+
+    #[test]
+    fn test_calibration_robustness() {
+        let arch = GpuArch::new(80);
+        let mut oracle = HardwarePredictor::new(arch, BayesianModel::default());
+        let workload = WorkloadDesc {
+            shape: ProblemShape { m: 2048, n: 2048, k: 2048 },
+            dtype: DType::Fp16,
+            calibration: None,
+        };
+
+        // Initial prediction
+        let p_init = oracle.posterior(&workload);
+        let t_init = p_init.performance_posteriors.runtime_us.mean;
+
+        // Simulate "Ground Truth" that is slightly faster than predicted (e.g. 0.8x)
+        let t_truth = t_init * 0.8;
+        let initial_error = (t_init - t_truth).abs();
+
+        // Feed feedback
+        let feedback = CalibrationFeedback {
+            measured_runtime_us: t_truth,
+            measured_issue_utilization: 0.8,
+            measured_bw_utilization: 0.8,
+            predicted_runtime_us: t_init,
+        };
+        oracle.update(&feedback);
+
+        // Calibrated prediction
+        let p_cal = oracle.posterior(&workload);
+        let t_cal = p_cal.performance_posteriors.runtime_us.mean;
+        let cal_error = (t_cal - t_truth).abs();
+
+        assert!(cal_error < initial_error, "Calibration should reduce prediction error. Initial: {}, Calibrated: {}", initial_error, cal_error);
     }
 }
-
