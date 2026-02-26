@@ -126,8 +126,9 @@ pub use capabilities::{
 };
 #[cfg(feature = "heuristics")]
 pub use predictor::{
-    Affinity, DType, HardwarePredictor, KernelPrediction, PredictorPrior, PressureRisk, ProblemShape,
-    CalibrationState,
+    Affinity, AnalyticalModel, CalibrationState, DType, HardwarePredictor, InferredState,
+    KernelPrediction, PredictorPrior, ProbabilisticHardwareOracle, ProbabilisticModel,
+    PressureRisk, ProblemShape, TuningContext, WorkloadDesc,
 };
 #[cfg(feature = "heuristics")]
 pub use capabilities::write_heuristics_rs;
