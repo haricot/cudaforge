@@ -140,7 +140,12 @@ impl<T> Measured<T> {
 impl Measured<f32> {
     /// Returns the effective value (value * calibration_factor).
     pub fn effective(&self) -> f32 {
-        self.value * self.calibration_factor.as_ref().map(|c| c.ratio).unwrap_or(1.0)
+        self.value
+            * self
+                .calibration_factor
+                .as_ref()
+                .map(|c| c.ratio)
+                .unwrap_or(1.0)
     }
 }
 
@@ -247,11 +252,21 @@ impl ArchObservables {
     pub fn calibrate(&mut self, facts: &[CalibrationFact]) {
         for fact in facts {
             let (target, meaning) = match fact.metric {
-                CalibrationMetric::DramBandwidth => (&mut self.dram_bandwidth_gbps, "empirical sustained DRAM throughput"),
-                CalibrationMetric::L2Bandwidth => (&mut self.l2_bandwidth_gbps, "empirical L2 cache throughput"),
-                CalibrationMetric::Fp32Compute => (&mut self.fp32_flops_tflops, "empirical FP32 compute throughput"),
-                CalibrationMetric::Fp16Compute | CalibrationMetric::TensorCoreCompute => 
-                    (&mut self.tensor_core_flops_tflops, "empirical Tensor Core throughput"),
+                CalibrationMetric::DramBandwidth => (
+                    &mut self.dram_bandwidth_gbps,
+                    "empirical sustained DRAM throughput",
+                ),
+                CalibrationMetric::L2Bandwidth => {
+                    (&mut self.l2_bandwidth_gbps, "empirical L2 cache throughput")
+                }
+                CalibrationMetric::Fp32Compute => (
+                    &mut self.fp32_flops_tflops,
+                    "empirical FP32 compute throughput",
+                ),
+                CalibrationMetric::Fp16Compute | CalibrationMetric::TensorCoreCompute => (
+                    &mut self.tensor_core_flops_tflops,
+                    "empirical Tensor Core throughput",
+                ),
             };
 
             if target.value > 0.0 {

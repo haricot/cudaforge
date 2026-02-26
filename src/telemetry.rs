@@ -1,13 +1,13 @@
 use serde::Serialize;
 
-use crate::predictor::{KernelIntent, CalibrationFeedback, CalibrationState, ShapeManifold};
+use crate::predictor::{CalibrationFeedback, CalibrationState, KernelIntent, ShapeManifold};
 
 /// A standardized diagnostic and execution log for a specific GPU kernel run.
-/// 
-/// The `GpuEEGLog` (Electroencephalogram Log) is designed to be the universal telemetry 
-/// format connecting high-level graph compilers (like Luminal or MLIR) with the underlying 
+///
+/// The `GpuEEGLog` (Electroencephalogram Log) is designed to be the universal telemetry
+/// format connecting high-level graph compilers (like Luminal or MLIR) with the underlying
 /// analytical predictor (`cudaforge`) and hardware profilers (`ncu`).
-/// 
+///
 /// It tracks the full cognitive pipeline:
 /// 1. What was the initial stimulus (the problem)?
 /// 2. What was the Oracle's prior belief (the prediction)?
@@ -18,7 +18,7 @@ use crate::predictor::{KernelIntent, CalibrationFeedback, CalibrationState, Shap
 pub struct GpuEEGLog {
     /// Timestamp or unique identifier for this kernel execution.
     pub session_id: String,
-    
+
     /// The target architecture's compute capability (e.g., 80 for Ampere).
     pub arch_base: u32,
 
@@ -87,13 +87,15 @@ impl GpuEEGLog {
         _pre_update_state: &CalibrationState,
         post_update_state: &CalibrationState,
     ) -> Self {
-        
         let prior = EegPrior {
             expected_runtime_us: intent.expected_runtime_us,
             expected_issue_util: intent.performance_signature.flop_utilization.mean,
             expected_bw_util: intent.performance_signature.bw_utilization.mean,
             prediction_predictability: intent.performance_signature.predictability.score,
-            regime_posterior: intent.performance_signature.dominant_limits.iter()
+            regime_posterior: intent
+                .performance_signature
+                .dominant_limits
+                .iter()
                 .map(|(k, v)| (k.clone(), *v))
                 .collect(),
         };

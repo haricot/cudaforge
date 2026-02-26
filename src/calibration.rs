@@ -20,7 +20,9 @@ pub trait CalibrationProbe {
 pub struct BandwidthProbe;
 
 impl CalibrationProbe for BandwidthProbe {
-    fn name(&self) -> &'static str { "Memory Bandwidth" }
+    fn name(&self) -> &'static str {
+        "Memory Bandwidth"
+    }
 
     fn generate_source(&self, _arch: &GpuArch) -> String {
         r#"
@@ -69,18 +71,22 @@ int main() {
     cudaFree(d_out);
     return 0;
 }
-"#.to_string()
+"#
+        .to_string()
     }
 
     fn parse_output(&self, stdout: &str) -> Vec<CalibrationFact> {
-        stdout.lines()
+        stdout
+            .lines()
             .find(|l| l.starts_with("BANDWIDTH:"))
             .and_then(|l| l.split(':').nth(1))
             .and_then(|v| v.trim().parse::<f32>().ok())
-            .map(|v| vec![CalibrationFact {
-                metric: CalibrationMetric::DramBandwidth,
-                measured_value: v,
-            }])
+            .map(|v| {
+                vec![CalibrationFact {
+                    metric: CalibrationMetric::DramBandwidth,
+                    measured_value: v,
+                }]
+            })
             .unwrap_or_default()
     }
 }
@@ -89,11 +95,14 @@ int main() {
 pub struct ComputeProbe;
 
 impl CalibrationProbe for ComputeProbe {
-    fn name(&self) -> &'static str { "FP32 Throughput" }
+    fn name(&self) -> &'static str {
+        "FP32 Throughput"
+    }
 
     fn generate_source(&self, arch: &GpuArch) -> String {
         let _arch_flag = format!("-arch=sm_{}", arch.base);
-        format!(r#"
+        format!(
+            r#"
 #include <cuda_runtime.h>
 #include <stdio.h>
 
@@ -145,18 +154,22 @@ int main() {{
     cudaFree(d_out);
     return 0;
 }}
-"#)
+"#
+        )
     }
 
     fn parse_output(&self, stdout: &str) -> Vec<CalibrationFact> {
-        stdout.lines()
+        stdout
+            .lines()
             .find(|l| l.starts_with("TFLOPS:"))
             .and_then(|l| l.split(':').nth(1))
             .and_then(|v| v.trim().parse::<f32>().ok())
-            .map(|v| vec![CalibrationFact {
-                metric: CalibrationMetric::Fp32Compute,
-                measured_value: v,
-            }])
+            .map(|v| {
+                vec![CalibrationFact {
+                    metric: CalibrationMetric::Fp32Compute,
+                    measured_value: v,
+                }]
+            })
             .unwrap_or_default()
     }
 }
@@ -174,7 +187,11 @@ impl CalibrationEngine {
     }
 
     /// Run a series of probes and return the collected facts.
-    pub fn run_probes(&self, arch: &GpuArch, probes: &[Box<dyn CalibrationProbe>]) -> Result<Vec<CalibrationFact>> {
+    pub fn run_probes(
+        &self,
+        arch: &GpuArch,
+        probes: &[Box<dyn CalibrationProbe>],
+    ) -> Result<Vec<CalibrationFact>> {
         if !self.work_dir.exists() {
             fs::create_dir_all(&self.work_dir)?;
         }
@@ -183,8 +200,12 @@ impl CalibrationEngine {
 
         for probe in probes {
             let source = probe.generate_source(arch);
-            let cu_file = self.work_dir.join(format!("{}.cu", probe.name().replace(' ', "_")));
-            let bin_file = self.work_dir.join(format!("{}.bin", probe.name().replace(' ', "_")));
+            let cu_file = self
+                .work_dir
+                .join(format!("{}.cu", probe.name().replace(' ', "_")));
+            let bin_file = self
+                .work_dir
+                .join(format!("{}.bin", probe.name().replace(' ', "_")));
 
             fs::write(&cu_file, source)?;
 
@@ -192,18 +213,26 @@ impl CalibrationEngine {
 
             let mut cmd = Command::new(nvcc);
             cmd.arg(&cu_file)
-               .arg("-o").arg(&bin_file)
-               .arg("-arch").arg(format!("sm_{}", arch.base))
-               .arg("-O3");
+                .arg("-o")
+                .arg(&bin_file)
+                .arg("-arch")
+                .arg(format!("sm_{}", arch.base))
+                .arg("-O3");
 
             let status = cmd.status()?;
             if !status.success() {
-                return Err(Error::CudaCompilationFailed(format!("Failed to compile probe: {}", probe.name())));
+                return Err(Error::CudaCompilationFailed(format!(
+                    "Failed to compile probe: {}",
+                    probe.name()
+                )));
             }
 
             let output = Command::new(&bin_file).output()?;
             if !output.status.success() {
-                return Err(Error::RuntimeError(format!("Failed to execute probe: {}", probe.name())));
+                return Err(Error::RuntimeError(format!(
+                    "Failed to execute probe: {}",
+                    probe.name()
+                )));
             }
 
             let stdout = String::from_utf8_lossy(&output.stdout);

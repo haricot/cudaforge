@@ -21,7 +21,7 @@
 /// let arch = cudaforge::detect_compute_cap()?;
 /// cudaforge::set_cfg!(builder, "has_wgmma", arch.base >= 90);
 /// ```
-#[macro_export] 
+#[macro_export]
 macro_rules! set_cfg {
     ($builder:expr, $name:expr, $value:expr) => {
         println!("cargo::rustc-check-cfg=cfg({})", $name);
@@ -422,7 +422,11 @@ pub struct ToolkitCapability {
     /// Detailed description of what this capability does
     pub description: &'static str,
     /// Function to check if the capability is available given arch + toolkit version + cuDNN version
-    pub check: fn(&crate::compute_cap::GpuArch, &crate::toolkit::CudaVersion, Option<&crate::toolkit::CudnnVersion>) -> bool,
+    pub check: fn(
+        &crate::compute_cap::GpuArch,
+        &crate::toolkit::CudaVersion,
+        Option<&crate::toolkit::CudnnVersion>,
+    ) -> bool,
 }
 
 /// List of capabilities that depend on the CUDA toolkit version.
@@ -825,7 +829,8 @@ pub fn print_summary_once(
     cudnn_version: Option<&crate::toolkit::CudnnVersion>,
 ) {
     let hw_results = get_capabilities_results(arch);
-    let tk_results = toolkit_version.map(|ver| get_toolkit_capabilities_results(arch, ver, cudnn_version));
+    let tk_results =
+        toolkit_version.map(|ver| get_toolkit_capabilities_results(arch, ver, cudnn_version));
 
     if let Ok(out_dir) = std::env::var("OUT_DIR") {
         let marker_file = std::path::Path::new(&out_dir).join(".cudaforge_hw_summary_printed");

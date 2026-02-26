@@ -1,5 +1,5 @@
 //! Implementation Predictor Module
-//! 
+//!
 //! Transforms static hardware metrics into an active cost model,
 //! estimating kernel class affinities, resource pressures,
 //! and likely optimal implementation strategies.
@@ -66,7 +66,13 @@ impl std::fmt::Display for PressureRisk {
         } else {
             "\x1b[32m" // green
         };
-        write!(f, "{}{}\x1b[0m ({:.2})", color, self.label.to_lowercase(), self.mean)
+        write!(
+            f,
+            "{}{}\x1b[0m ({:.2})",
+            color,
+            self.label.to_lowercase(),
+            self.mean
+        )
     }
 }
 
@@ -152,6 +158,22 @@ pub struct StrategyDistribution {
     pub search_space: SearchSpace,
 }
 
+/// Hard kernel legality constraints derived from hardware capabilities.
+#[derive(Debug, Clone, Serialize)]
+pub struct KernelConstraints {
+    /// Allowed strategy categories given hard hardware legality.
+    pub allowed_categories: Vec<StrategyCategory>,
+    /// Optional reason for any excluded categories.
+    pub reason: Option<String>,
+}
+
+impl KernelConstraints {
+    /// Returns true if the category is allowed by hard constraints.
+    pub fn allows(&self, category: StrategyCategory) -> bool {
+        self.allowed_categories.contains(&category)
+    }
+}
+
 /// Explicit uncertainty quantification for the prior.
 #[derive(Debug, Clone, Serialize)]
 pub struct PriorUncertainty {
@@ -175,6 +197,9 @@ pub trait HardwareConditionedPrior: Send + Sync {
 
     /// Generate a probabilistic prior over implementation strategies.
     fn strategy_prior(&self, workload: &WorkloadDesc) -> StrategyDistribution;
+
+    /// Return hard kernel legality constraints independent of priors.
+    fn kernel_constraints(&self, workload: &WorkloadDesc) -> KernelConstraints;
 
     /// Quantify the uncertainty of the generated priors.
     fn uncertainty(&self, workload: &WorkloadDesc) -> PriorUncertainty;
@@ -491,7 +516,11 @@ impl WorkloadDesc {
     /// Helper to generate a standard large-batch GEMM workload for testing.
     pub fn synthetic_gemm() -> Self {
         Self {
-            shape: ProblemShape { m: 2048, n: 2048, k: 2048 },
+            shape: ProblemShape {
+                m: 2048,
+                n: 2048,
+                k: 2048,
+            },
             dtype: DType::Fp16,
             calibration: None,
         }
@@ -616,9 +645,9 @@ impl KernelPrediction {
 
 impl PartialEq for KernelPrediction {
     fn eq(&self, other: &Self) -> bool {
-        self.strategy == other.strategy && 
-        (self.probability - other.probability).abs() < 1e-6 &&
-        (self.uncertainty - other.uncertainty).abs() < 1e-6
+        self.strategy == other.strategy
+            && (self.probability - other.probability).abs() < 1e-6
+            && (self.uncertainty - other.uncertainty).abs() < 1e-6
     }
 }
 impl Eq for KernelPrediction {}
@@ -772,9 +801,15 @@ impl InferredState {
     pub fn entropy_regime(&self) -> f32 {
         let p = &self.execution_regime;
         let mut e = 0.0;
-        if p.compute_bound > 0.0 { e -= p.compute_bound * p.compute_bound.log2(); }
-        if p.memory_bound > 0.0 { e -= p.memory_bound * p.memory_bound.log2(); }
-        if p.balanced > 0.0 { e -= p.balanced * p.balanced.log2(); }
+        if p.compute_bound > 0.0 {
+            e -= p.compute_bound * p.compute_bound.log2();
+        }
+        if p.memory_bound > 0.0 {
+            e -= p.memory_bound * p.memory_bound.log2();
+        }
+        if p.balanced > 0.0 {
+            e -= p.balanced * p.balanced.log2();
+        }
         e
     }
 
@@ -948,7 +983,7 @@ pub struct PredictorPrior {
 }
 
 /// Operational intent emitted for a specific kernel implementation.
-/// 
+///
 /// This is the machine-consumable output of the predictor, used to
 /// drive codegen or autotuning.
 #[derive(Debug, Clone, Serialize)]
@@ -1007,7 +1042,7 @@ pub struct SampledConfig {
 }
 
 /// Suggested parametric search space for autotuning.
-/// 
+///
 /// This reduces the search space from thousands of combinations
 /// to a handful of plausible candidates based on hardware limits.
 #[derive(Debug, Clone, Serialize, Default)]
@@ -1187,7 +1222,7 @@ pub struct PerformanceSignature {
 
 /// The formal latent microarchitectural state vector θ.
 ///
-/// This represents the "unseen" parameters of the GPU's physics that we 
+/// This represents the "unseen" parameters of the GPU's physics that we
 /// attempt to infer from execution telemetry.
 #[derive(Debug, Clone, Serialize)]
 pub struct LatentStateTheta {
@@ -1233,7 +1268,15 @@ impl ProbabilisticModel for AnalyticalModel {
         shape: &ProblemShape,
         calib: &CalibrationState,
     ) -> PerformanceSignature {
-        estimate_performance_signature(arch, obs, derived, &ExecutionProfile::default(), shape, &NumericFeasibility::default(), calib)
+        estimate_performance_signature(
+            arch,
+            obs,
+            derived,
+            &ExecutionProfile::default(),
+            shape,
+            &NumericFeasibility::default(),
+            calib,
+        )
     }
 
     fn update_posterior(&mut self, _runtime_ratio: f32) {
@@ -1285,25 +1328,30 @@ impl ProbabilisticModel for BayesianModel {
     ) -> PerformanceSignature {
         // Here we would ideally sample from p(θ), but for the first iteration
         // we use the expected value E[θ] = self.theta.
-        
+
         // We inject the latent intensities into a modified analytical model
         let mut sig = estimate_performance_signature(
-            arch, obs, derived, &ExecutionProfile::default(), shape, &NumericFeasibility::default(), calib
+            arch,
+            obs,
+            derived,
+            &ExecutionProfile::default(),
+            shape,
+            &NumericFeasibility::default(),
+            calib,
         );
-        
+
         let apply_theta = |s: &mut PerformanceSignature, t: &LatentStateTheta| {
             s.scheduler_model.issue_rate.mean *= t.lambda_issue;
             s.flop_utilization.mean *= t.lambda_issue; // Propagate latent state to main metric
             s.cache_model.dram_miss_rate.mean *= t.lambda_mem;
-            s.bw_utilization.mean *= t.lambda_mem;     // Propagate to BW
+            s.bw_utilization.mean *= t.lambda_mem; // Propagate to BW
         };
         apply_theta(&mut sig, &self.theta);
-        
-        
+
         // ── Phase 43: Jacobian Uncertainty Propagation ──
         // We calculate J = \nabla_\theta T using finite differences.
         let epsilon = 1e-4;
-        
+
         // Localized Runtime Evaluator for Jacobian
         let calc_runtime = |s: &PerformanceSignature| -> f32 {
             let m = shape.m as f64;
@@ -1317,78 +1365,83 @@ impl ProbabilisticModel for BayesianModel {
                 0.0
             }
         };
-        
+
         let base_runtime = calc_runtime(&sig);
-        
+
         // Helper to evaluate runtime with perturbed theta
         let eval_perturbed = |t_perturbed: LatentStateTheta| -> f32 {
             let mut s = estimate_performance_signature(
-                arch, obs, derived, &ExecutionProfile::default(), shape, &NumericFeasibility::default(), calib
+                arch,
+                obs,
+                derived,
+                &ExecutionProfile::default(),
+                shape,
+                &NumericFeasibility::default(),
+                calib,
             );
             apply_theta(&mut s, &t_perturbed);
             calc_runtime(&s)
         };
-        
+
         // J = [dT/dλ_issue, dT/dλ_mem]
         let mut t_issue = self.theta.clone();
         t_issue.lambda_issue += epsilon;
         let dt_dissue = (eval_perturbed(t_issue) - base_runtime) / epsilon;
-        
+
         let mut t_mem = self.theta.clone();
         t_mem.lambda_mem += epsilon;
         let dt_dmem = (eval_perturbed(t_mem) - base_runtime) / epsilon;
-        
+
         // σ_T^2 = J * Σ_θ * J^T + σ_noise^2
         let variance_issue = self.variance.lambda_issue;
         let variance_mem = self.variance.lambda_mem;
-        
-        let variance_t = (dt_dissue * dt_dissue * variance_issue) 
-                       + (dt_dmem * dt_dmem * variance_mem);
-        
+
+        let variance_t =
+            (dt_dissue * dt_dissue * variance_issue) + (dt_dmem * dt_dmem * variance_mem);
+
         // Convert to standard deviation relative to baseline runtime
         let sigma_t = (variance_t.max(0.0).sqrt() / base_runtime.max(1e-6)).clamp(0.0, 1.0);
-        
-        sig.uncertainty.epistemic_uncertainty = sigma_t;
-        
-        sig
 
+        sig.uncertainty.epistemic_uncertainty = sigma_t;
+
+        sig
     }
 
     fn update_posterior(&mut self, runtime_ratio: f32) {
         // Implementation of: p(θ | D_new) ∝ p(D_new | θ) p(θ)
         // We use a formal Extended Kalman Filter (EKF) update for the latent intensities.
-        
+
         // Observation: measured runtime ratio
         let z = runtime_ratio;
         // Expected observation (normalized via delta base)
-        let h_x = 1.0_f32; 
-        
+        let h_x = 1.0_f32;
+
         // Jacobian of observation model H (simplified proxy mapping delta to issue/mem ratios)
         // If we are slower (z > 1.0), it implies higher stall/memory intensity or lower issue
         let h_issue = -0.5_f32; // Assuming lower issue rate -> slower runtime
-        let h_mem = 0.5_f32;   // Assuming higher mem intensity -> slower runtime
-        
+        let h_mem = 0.5_f32; // Assuming higher mem intensity -> slower runtime
+
         let p_issue = self.variance.lambda_issue;
         let p_mem = self.variance.lambda_mem;
-        
+
         // Observation noise covariance R
-        let r_noise = 0.05_f32; 
-        
+        let r_noise = 0.05_f32;
+
         // Innovation (residual) y = z - h_x
         let y = z - h_x;
-        
+
         // Innovation covariance S = H P H^T + R
         let s_cov = (h_issue * h_issue * p_issue) + (h_mem * h_mem * p_mem) + r_noise;
-        
+
         // Kalman Gain K = P H^T S^-1
         let k_issue = (p_issue * h_issue) / s_cov;
         let k_mem = (p_mem * h_mem) / s_cov;
-        
+
         // Update State Mean: μ = μ + K y
         self.theta.lambda_issue = (self.theta.lambda_issue + k_issue * y).max(0.01);
         self.theta.lambda_mem = (self.theta.lambda_mem + k_mem * y).max(0.01);
         self.theta.lambda_stall = (self.theta.lambda_stall + (k_mem - k_issue) * y).max(0.01);
-        
+
         // Update State Covariance: P = (I - K H) P
         self.variance.lambda_issue = (1.0 - k_issue * h_issue) * p_issue;
         self.variance.lambda_mem = (1.0 - k_mem * h_mem) * p_mem;
@@ -1407,7 +1460,13 @@ pub struct HardwarePredictor<M: ProbabilisticModel = AnalyticalModel> {
 
 impl<M: ProbabilisticModel> HardwareConditionedPrior for HardwarePredictor<M> {
     fn feasibility(&self, workload: &WorkloadDesc) -> FeasibilityReport {
-        let report = self.evaluate(&workload.shape, workload.dtype, workload.calibration.clone()).unwrap();
+        let report = self
+            .evaluate(
+                &workload.shape,
+                workload.dtype,
+                workload.calibration.clone(),
+            )
+            .unwrap();
         FeasibilityReport {
             numeric_feasibility: report.workload_observed.feasibility,
             pressure_risk: report.derived_metrics.execution_constraints,
@@ -1415,7 +1474,13 @@ impl<M: ProbabilisticModel> HardwareConditionedPrior for HardwarePredictor<M> {
     }
 
     fn scaling(&self, workload: &WorkloadDesc) -> ScalingModel {
-        let report = self.evaluate(&workload.shape, workload.dtype, workload.calibration.clone()).unwrap();
+        let report = self
+            .evaluate(
+                &workload.shape,
+                workload.dtype,
+                workload.calibration.clone(),
+            )
+            .unwrap();
         ScalingModel {
             execution_regime: report.inference.execution_regime,
             reuse_model: report.derived_metrics.reuse_model,
@@ -1424,15 +1489,58 @@ impl<M: ProbabilisticModel> HardwareConditionedPrior for HardwarePredictor<M> {
     }
 
     fn strategy_prior(&self, workload: &WorkloadDesc) -> StrategyDistribution {
-        let report = self.evaluate(&workload.shape, workload.dtype, workload.calibration.clone()).unwrap();
+        let report = self
+            .evaluate(
+                &workload.shape,
+                workload.dtype,
+                workload.calibration.clone(),
+            )
+            .unwrap();
         StrategyDistribution {
             rankings: report.inference.kernel_family_distribution,
             search_space: report.search_prior.search_space_reduction,
         }
     }
 
+    fn kernel_constraints(&self, workload: &WorkloadDesc) -> KernelConstraints {
+        let report = self
+            .evaluate(
+                &workload.shape,
+                workload.dtype,
+                workload.calibration.clone(),
+            )
+            .unwrap();
+        let mut allowed = vec![
+            StrategyCategory::CudaCoreBlocked,
+            StrategyCategory::WarpTiling,
+            StrategyCategory::PersistentFusion,
+            StrategyCategory::SplitK,
+        ];
+        let tensor_ok = report
+            .workload_observed
+            .feasibility
+            .precision_breakdown
+            .tensor_core_available;
+        let reason = if tensor_ok {
+            allowed.push(StrategyCategory::TensorCore);
+            None
+        } else {
+            Some("Tensor Core unavailable for requested dtype/arch".to_string())
+        };
+        KernelConstraints {
+            allowed_categories: allowed,
+            reason,
+        }
+    }
+
     fn uncertainty(&self, workload: &WorkloadDesc) -> PriorUncertainty {
-        let report = self.evaluate(&workload.shape, workload.dtype, workload.calibration.clone()).unwrap();
+        let report = self
+            .evaluate(
+                &workload.shape,
+                workload.dtype,
+                workload.calibration.clone(),
+            )
+            .unwrap();
         PriorUncertainty {
             kernel_entropy: report.inference.entropy_kernel(),
             regime_entropy: report.inference.entropy_regime(),
@@ -1464,19 +1572,41 @@ impl<M: ProbabilisticModel> ProbabilisticHardwareOracle for HardwarePredictor<M>
         obs.apply_coefficients(calib.flop_scale_coeff, calib.bw_scale_coeff);
 
         let derived = DerivedProperties::from_observables(&obs);
-        let sig = self.model.estimate(&self.arch, &obs, &derived, &workload.shape, &calib);
+        let sig = self
+            .model
+            .estimate(&self.arch, &obs, &derived, &workload.shape, &calib);
 
-        let prior = PredictorPrior::evaluate(&self.arch, obs, derived, &workload.shape, workload.dtype, Some(calib), sig);
+        let prior = PredictorPrior::evaluate(
+            &self.arch,
+            obs,
+            derived,
+            &workload.shape,
+            workload.dtype,
+            Some(calib),
+            sig,
+        );
         prior.inference
     }
 
     fn annotate_node(&self, workload: &WorkloadDesc, labels: &mut HashMap<String, String>) {
         let post = self.posterior(workload);
-        labels.insert("cudaforge.arch_affinity.regime".to_string(), format!("{:?}", post.execution_regime));
-        labels.insert("cudaforge.prediction.confidence".to_string(), format!("{:.2}", post.confidence_breakdown.regime));
-        labels.insert("cudaforge.prediction.runtime_us".to_string(), format!("{:.1}", post.performance_posteriors.runtime_us.mean));
+        labels.insert(
+            "cudaforge.arch_affinity.regime".to_string(),
+            format!("{:?}", post.execution_regime),
+        );
+        labels.insert(
+            "cudaforge.prediction.confidence".to_string(),
+            format!("{:.2}", post.confidence_breakdown.regime),
+        );
+        labels.insert(
+            "cudaforge.prediction.runtime_us".to_string(),
+            format!("{:.1}", post.performance_posteriors.runtime_us.mean),
+        );
         if let Some(best) = post.kernel_family_distribution.first() {
-            labels.insert("cudaforge.arch_affinity.strategy".to_string(), best.strategy.clone());
+            labels.insert(
+                "cudaforge.arch_affinity.strategy".to_string(),
+                best.strategy.clone(),
+            );
         }
     }
 }
@@ -1499,16 +1629,26 @@ impl<M: ProbabilisticModel> HardwarePredictor<M> {
             dtype,
             calibration: calibration_data,
         };
-        
+
         let mut obs = ArchObservables::from_compute_cap(self.arch.base);
         let calib = workload.calibration.clone().unwrap_or_default();
         obs.apply_coefficients(calib.flop_scale_coeff, calib.bw_scale_coeff);
-        
+
         let derived = DerivedProperties::from_observables(&obs);
-        let sig = self.model.estimate(&self.arch, &obs, &derived, &workload.shape, &calib);
-        
-        let report = PredictorPrior::evaluate(&self.arch, obs, derived, &workload.shape, workload.dtype, Some(calib), sig);
-        
+        let sig = self
+            .model
+            .estimate(&self.arch, &obs, &derived, &workload.shape, &calib);
+
+        let report = PredictorPrior::evaluate(
+            &self.arch,
+            obs,
+            derived,
+            &workload.shape,
+            workload.dtype,
+            Some(calib),
+            sig,
+        );
+
         Ok(report)
     }
 }
@@ -1557,24 +1697,28 @@ pub struct TransferMatrix;
 
 impl TransferMatrix {
     /// Translates a state learned on `source_arch` to be applicable to `target_arch`.
-    /// 
+    ///
     /// For example, moving from Ampere (80) to Hopper (90) might see a drop in
     /// BW utilization efficiency due to TMA overhead on small shapes, or a boost in FLOP
     /// efficiency due to better scheduling.
-    pub fn translate(state: &CalibrationState, source_arch: u32, target_arch: u32) -> CalibrationState {
+    pub fn translate(
+        state: &CalibrationState,
+        source_arch: u32,
+        target_arch: u32,
+    ) -> CalibrationState {
         if source_arch == target_arch || state.samples_absorbed == 0 {
             return state.clone();
         }
 
         let mut next_state = state.clone();
-        
+
         // Decay the confidence (samples) since this is a fuzzy translation
         next_state.samples_absorbed = (next_state.samples_absorbed as f32 * 0.25) as u32;
 
         // Apply architectural translation heuristics
         if source_arch < 90 && target_arch >= 90 {
             // Pre-Hopper to Hopper: TMA and TMEM introduce BW overhead but higher compute efficiency
-            next_state.bw_scale_coeff *= 0.85; 
+            next_state.bw_scale_coeff *= 0.85;
             next_state.flop_scale_coeff *= 1.15;
             next_state.pressure_tune_coeff *= 0.90; // Hopper schedulers are better at hiding pressure
         } else if source_arch >= 90 && target_arch < 90 {
@@ -1627,10 +1771,12 @@ impl CalibrationState {
         let learning_rate = 1.0 / (1.0 + self.samples_absorbed as f32).sqrt();
 
         // Update coefficients via moving average
-        self.flop_scale_coeff = self.flop_scale_coeff * (1.0 - learning_rate) + (self.flop_scale_coeff * issue_ratio) * learning_rate;
-        self.bw_scale_coeff = self.bw_scale_coeff * (1.0 - learning_rate) + (self.bw_scale_coeff * bw_ratio) * learning_rate;
+        self.flop_scale_coeff = self.flop_scale_coeff * (1.0 - learning_rate)
+            + (self.flop_scale_coeff * issue_ratio) * learning_rate;
+        self.bw_scale_coeff = self.bw_scale_coeff * (1.0 - learning_rate)
+            + (self.bw_scale_coeff * bw_ratio) * learning_rate;
 
-        // Pressure tuning: If runtime is significantly worse than expected despite good utilization, 
+        // Pressure tuning: If runtime is significantly worse than expected despite good utilization,
         // issue/scheduler pressure must be higher than modeled.
         // For now, keep it simple: clamp the scale coefficients.
         self.flop_scale_coeff = self.flop_scale_coeff.clamp(0.8, 1.2);
@@ -1649,11 +1795,9 @@ pub struct VerificationTargets {
     pub expected_stall_reason: String,
 }
 
-
-
 impl PredictorPrior {
     /// Evaluates a problem shape and generates prescriptive implementation intents.
-    /// 
+    ///
     /// This is the primary entry point for a standard analytical prediction.
     pub fn evaluate(
         arch: &GpuArch,
@@ -1700,7 +1844,11 @@ impl PredictorPrior {
             Affinity::Low // High FLOP:Byte means BW is relatively starved
         };
 
-        let reduction_heavy = if arch.base >= 70 { Affinity::High } else { Affinity::Medium };
+        let reduction_heavy = if arch.base >= 70 {
+            Affinity::High
+        } else {
+            Affinity::Medium
+        };
 
         // Persistent fusion requires large L2 and sufficient SMs
         let persistent_fusion = if obs.l2_bytes.value >= 16 * 1024 * 1024 {
@@ -1712,11 +1860,12 @@ impl PredictorPrior {
         };
 
         // --- 2. Resource Pressures ---
-        let register_pressure_risk = if obs.registers_per_sm.value >= 65536 && obs.max_threads_per_sm.value >= 1536 {
-            PressureRisk::new(0.15)
-        } else {
-            PressureRisk::new(0.55)
-        };
+        let register_pressure_risk =
+            if obs.registers_per_sm.value >= 65536 && obs.max_threads_per_sm.value >= 1536 {
+                PressureRisk::new(0.15)
+            } else {
+                PressureRisk::new(0.55)
+            };
 
         let shared_memory_pressure_risk = if obs.shared_mem_per_sm.value >= 96 * 1024 {
             PressureRisk::new(0.1)
@@ -1744,14 +1893,14 @@ impl PredictorPrior {
             (50, 75)
         };
 
-        let latency_hiding_sufficiency = if obs.registers_per_sm.value >= 65536 && obs.max_threads_per_sm.value >= 2048 {
-            "ideal (massive concurrency possible)".to_string()
-        } else if arch.base >= 80 {
-            "high (asynchronous orchestration leverage)".to_string()
-        } else {
-            "moderate (compute-latency sensitive)".to_string()
-        };
-
+        let latency_hiding_sufficiency =
+            if obs.registers_per_sm.value >= 65536 && obs.max_threads_per_sm.value >= 2048 {
+                "ideal (massive concurrency possible)".to_string()
+            } else if arch.base >= 80 {
+                "high (asynchronous orchestration leverage)".to_string()
+            } else {
+                "moderate (compute-latency sensitive)".to_string()
+            };
 
         // --- 4. Strategy Ranking ---
         let mut implementation_strategies = Vec::new();
@@ -1759,14 +1908,17 @@ impl PredictorPrior {
         if derived.tensor_core_dominance > 0.0 {
             if obs.shared_mem_per_sm.value >= 96 * 1024 {
                 if arch.base >= 90 {
-                    implementation_strategies.push("WGMMA Tensor Core GEMM with TMA memory streams");
+                    implementation_strategies
+                        .push("WGMMA Tensor Core GEMM with TMA memory streams");
                 } else if arch.base >= 80 {
-                    implementation_strategies.push("Tensor Core GEMM with cp.async multi-stage pipelines");
+                    implementation_strategies
+                        .push("Tensor Core GEMM with cp.async multi-stage pipelines");
                 } else {
                     implementation_strategies.push("Tensor Core GEMM with double-buffered SMEM");
                 }
             } else {
-                implementation_strategies.push("Tensor Core GEMM with register constraints (warp specialization)");
+                implementation_strategies
+                    .push("Tensor Core GEMM with register constraints (warp specialization)");
             }
         } else {
             implementation_strategies.push("Blocked CUDA-core GEMM with double-buffered SMEM");
@@ -1775,11 +1927,12 @@ impl PredictorPrior {
         if persistent_fusion == Affinity::High {
             implementation_strategies.push("Persistent L2-resident fusion kernel");
         } else {
-             implementation_strategies.push("Register-heavy warp tiling kernel (avoid spilling)");
+            implementation_strategies.push("Register-heavy warp tiling kernel (avoid spilling)");
         }
 
         if derived.roofline_fp32 > 60.0 {
-            implementation_strategies.push("Split-K reduction kernel (to increase parallel stream width)");
+            implementation_strategies
+                .push("Split-K reduction kernel (to increase parallel stream width)");
         }
 
         // --- 1.5. Dynamic SM Limits and Ratios (Phase 9) ---
@@ -1795,10 +1948,12 @@ impl PredictorPrior {
         // Let's rely on standard ratios relative to total bandwidth since we know totals.
         let fp32_per_sm_ops_cycle = if arch.base >= 80 { 128.0 } else { 64.0 }; // Typically FP32 cores per SM per cycle
         let ldst_per_sm_bytes_cycle = if arch.base >= 80 { 128.0 } else { 32.0 }; // Typically LD/ST units per SM
-        
-        // Ratio: Max Compute vs BW 
-        let compute_to_shared_ratio = (obs.fp32_flops_tflops.effective() * 1000.0) / obs.shared_mem_bandwidth_gbps.effective();
-        let compute_to_l2_ratio = (obs.fp32_flops_tflops.effective() * 1000.0) / obs.l2_bandwidth_gbps.effective();
+
+        // Ratio: Max Compute vs BW
+        let compute_to_shared_ratio = (obs.fp32_flops_tflops.effective() * 1000.0)
+            / obs.shared_mem_bandwidth_gbps.effective();
+        let compute_to_l2_ratio =
+            (obs.fp32_flops_tflops.effective() * 1000.0) / obs.l2_bandwidth_gbps.effective();
 
         let throughput_ratios = ThroughputRatios {
             fp32_per_sm_ops_cycle,
@@ -1809,7 +1964,13 @@ impl PredictorPrior {
 
         let software_execution_limits = SoftwareExecutionLimits {
             max_async_copies_in_flight: if arch.base >= 80 { 32 } else { 0 },
-            max_barriers: if arch.base >= 90 { 64 } else if arch.base >= 80 { 16 } else { 0 },
+            max_barriers: if arch.base >= 90 {
+                64
+            } else if arch.base >= 80 {
+                16
+            } else {
+                0
+            },
             cluster_launch_supported: arch.base >= 90,
             cooperative_grid_viable: arch.base >= 60,
         };
@@ -1839,7 +2000,9 @@ impl PredictorPrior {
             ExecutionArchClass::DataflowGpu => MemoryPipeline::TmemDataflow,
             ExecutionArchClass::PipelineGpu => MemoryPipeline::TmaStreaming,
             ExecutionArchClass::AsyncTensor => MemoryPipeline::AsyncSmem,
-            ExecutionArchClass::EarlyTensor | ExecutionArchClass::PreTensor => MemoryPipeline::SmemBlocking,
+            ExecutionArchClass::EarlyTensor | ExecutionArchClass::PreTensor => {
+                MemoryPipeline::SmemBlocking
+            }
         };
 
         let parallelism_model = match arch_class {
@@ -1856,7 +2019,11 @@ impl PredictorPrior {
             ExecutionArchClass::AsyncTensor => NumericEngineClass::TensorMixed,
             ExecutionArchClass::EarlyTensor => NumericEngineClass::TensorFp16,
             ExecutionArchClass::PreTensor => {
-                if arch.base >= 60 { NumericEngineClass::MixedScalar } else { NumericEngineClass::Fp32Only }
+                if arch.base >= 60 {
+                    NumericEngineClass::MixedScalar
+                } else {
+                    NumericEngineClass::Fp32Only
+                }
             }
         };
 
@@ -1878,22 +2045,35 @@ impl PredictorPrior {
         };
 
         // --- 1.7. Phase 10 Numeric Modes and Memory Reuse Envelope ---
-        let fp32_math_class = if arch.base >= 60 { "native fused multi-add".to_string() } else { "standard multi-add".to_string() };
-        let fp16_math = if arch.base >= 53 { "viable (native ISA)".to_string() } else { "emulated (via FP32)".to_string() };
-        let half2_vector_math = if obs.fp8_flops_tflops.value > 0.0 || obs.tensor_core_flops_tflops.value > 0.0 {
-            "superseded by Tensor Cores".to_string()
-        } else if arch.base >= 70 || arch.base == 60 || arch.base == 62 || arch.base == 53 {
-            "viable (half2 native support)".to_string()
+        let fp32_math_class = if arch.base >= 60 {
+            "native fused multi-add".to_string()
         } else {
-            "unviable (throughput throttled, prefer FP32 compute)".to_string()
+            "standard multi-add".to_string()
         };
-        let int8_dot_product = if arch.base >= 61 { "viable (DP4A native support)".to_string() } else { "unavailable / emulated".to_string() };
+        let fp16_math = if arch.base >= 53 {
+            "viable (native ISA)".to_string()
+        } else {
+            "emulated (via FP32)".to_string()
+        };
+        let half2_vector_math =
+            if obs.fp8_flops_tflops.value > 0.0 || obs.tensor_core_flops_tflops.value > 0.0 {
+                "superseded by Tensor Cores".to_string()
+            } else if arch.base >= 70 || arch.base == 60 || arch.base == 62 || arch.base == 53 {
+                "viable (half2 native support)".to_string()
+            } else {
+                "unviable (throughput throttled, prefer FP32 compute)".to_string()
+            };
+        let int8_dot_product = if arch.base >= 61 {
+            "viable (DP4A native support)".to_string()
+        } else {
+            "unavailable / emulated".to_string()
+        };
         let mixed_precision_accumulate = if derived.tensor_core_dominance > 0.0 {
             "highly viable (native TC accumulation)".to_string()
         } else if arch.base >= 60 {
-             "limited (scalar accumulation)".to_string()
+            "limited (scalar accumulation)".to_string()
         } else {
-             "expensive".to_string()
+            "expensive".to_string()
         };
 
         let numeric_execution_modes = NumericExecutionModes {
@@ -1904,12 +2084,13 @@ impl PredictorPrior {
             mixed_precision_accumulate,
         };
 
-        let expected_reuse_depth = if obs.registers_per_sm.value >= 65536 && obs.shared_mem_per_sm.value >= 96 * 1024 {
-            "deep (high data reuse per LDG)".to_string()
-        } else {
-            "shallow (register capped)".to_string()
-        };
-        
+        let expected_reuse_depth =
+            if obs.registers_per_sm.value >= 65536 && obs.shared_mem_per_sm.value >= 96 * 1024 {
+                "deep (high data reuse per LDG)".to_string()
+            } else {
+                "shallow (register capped)".to_string()
+            };
+
         let smem_staging_depth = if arch.base >= 80 && obs.shared_mem_per_sm.value >= 160 * 1024 {
             "multi-stage (>=3 stages viable)".to_string()
         } else if obs.shared_mem_per_sm.value >= 96 * 1024 {
@@ -1965,11 +2146,12 @@ impl PredictorPrior {
             "high (spilling heavily penalizes occupancy)".to_string()
         };
 
-        let scheduler_pressure_sensitivity = if obs.max_warps_per_sm.value / obs.schedulers_per_sm.value >= 12 {
-            "high (requires massive thread-level parallelism or ILP)".to_string()
-        } else {
-            "medium (standard warp scheduling suffices)".to_string()
-        };
+        let scheduler_pressure_sensitivity =
+            if obs.max_warps_per_sm.value / obs.schedulers_per_sm.value >= 12 {
+                "high (requires massive thread-level parallelism or ILP)".to_string()
+            } else {
+                "medium (standard warp scheduling suffices)".to_string()
+            };
 
         let instruction_level_parallelism_sensitivity = if arch.base == 61 {
             "high (dual-issue absent, relies on ILP)".to_string()
@@ -1978,16 +2160,17 @@ impl PredictorPrior {
         };
 
         let issue_slot_utilization_target = if arch.base <= 61 {
-             "≥ 70% to hide latency".to_string()
+            "≥ 70% to hide latency".to_string()
         } else {
-             "optimized via hardware dependency tracking".to_string()
+            "optimized via hardware dependency tracking".to_string()
         };
 
         let performance_regime = PerformanceRegime {
             compute_vs_memory_balance: compute_vs_memory_balance.clone(),
             register_pressure_sensitivity: register_pressure_sensitivity.clone(),
             scheduler_pressure_sensitivity: scheduler_pressure_sensitivity.clone(),
-            instruction_level_parallelism_sensitivity: instruction_level_parallelism_sensitivity.clone(),
+            instruction_level_parallelism_sensitivity: instruction_level_parallelism_sensitivity
+                .clone(),
             issue_slot_utilization_target: issue_slot_utilization_target.clone(),
         };
 
@@ -2029,7 +2212,7 @@ impl PredictorPrior {
         };
 
         let l2_reuse_leverage = if arch.base == 61 {
-             "moderate (streaming-biased, limited reuse cache)".to_string()
+            "moderate (streaming-biased, limited reuse cache)".to_string()
         } else if obs.l2_bytes.value >= 16 * 1024 * 1024 {
             "critical (L2 residency dominates performance)".to_string()
         } else {
@@ -2050,16 +2233,28 @@ impl PredictorPrior {
             smem_amortization: smem_amortization.clone(),
         };
 
-        let preferred_tile_size_range = if arch.base >= 80 { (128, 256) } else { (64, 128) };
-        let reuse_depth_achievable = if obs.registers_per_sm.value >= 65536 { Affinity::Medium } else { Affinity::Low };
-        let split_k_viability = if arch.base == 61 {
-             "Only for extreme aspect ratios or very large K".to_string()
-        } else if derived.roofline_fp32 > 60.0 {
-             "Highly advisable for MxN < 4096".to_string()
+        let preferred_tile_size_range = if arch.base >= 80 {
+            (128, 256)
         } else {
-             "Only for extreme edge cases".to_string()
+            (64, 128)
         };
-        let epilogue_fusion_headroom = if arch.base >= 80 && obs.max_threads_per_sm.value >= 1536 { Affinity::Medium } else { Affinity::Low };
+        let reuse_depth_achievable = if obs.registers_per_sm.value >= 65536 {
+            Affinity::Medium
+        } else {
+            Affinity::Low
+        };
+        let split_k_viability = if arch.base == 61 {
+            "Only for extreme aspect ratios or very large K".to_string()
+        } else if derived.roofline_fp32 > 60.0 {
+            "Highly advisable for MxN < 4096".to_string()
+        } else {
+            "Only for extreme edge cases".to_string()
+        };
+        let epilogue_fusion_headroom = if arch.base >= 80 && obs.max_threads_per_sm.value >= 1536 {
+            Affinity::Medium
+        } else {
+            Affinity::Low
+        };
 
         let gemm_specific_signals = GemmSpecificSignals {
             preferred_tile_size_range,
@@ -2084,7 +2279,7 @@ impl PredictorPrior {
         // Numerical archetypes score
         let occ_val = (achievable_occupancy_range.0 + achievable_occupancy_range.1) as f32 / 200.0;
         let rf_val = obs.registers_per_sm.value as f32 / 65536.0;
-        
+
         // Shape signals
         let is_small_m_n = shape.m > 0 && shape.n > 0 && (shape.m < 128 || shape.n < 128);
         let is_large_k = shape.k > 4096;
@@ -2093,61 +2288,121 @@ impl PredictorPrior {
         // Strategy A: Blocked CUDA-core GEMM
         let (s_blocked, u_blocked) = {
             let mut score = 3.0;
-            if arch.base <= 61 { score += 2.0; } 
-            if smem_amortization.contains("essential") { score += 1.5; }
-            if tensor_core_gemm == Affinity::High { score -= 3.0; }
-            if is_small_m_n { score -= 1.0; } 
-            if !feasibility.is_native { score -= 0.5; } // Small conversion penalty
-            (score + occ_val, 0.05) 
+            if arch.base <= 61 {
+                score += 2.0;
+            }
+            if smem_amortization.contains("essential") {
+                score += 1.5;
+            }
+            if tensor_core_gemm == Affinity::High {
+                score -= 3.0;
+            }
+            if is_small_m_n {
+                score -= 1.0;
+            }
+            if !feasibility.is_native {
+                score -= 0.5;
+            } // Small conversion penalty
+            (score + occ_val, 0.05)
         };
-        candidates.push(("Blocked CUDA-core GEMM with double-buffered SMEM", StrategyCategory::CudaCoreBlocked, s_blocked, u_blocked, "Reliant on standard TLP and thread-level latency hiding."));
+        candidates.push((
+            "Blocked CUDA-core GEMM with double-buffered SMEM",
+            StrategyCategory::CudaCoreBlocked,
+            s_blocked,
+            u_blocked,
+            "Reliant on standard TLP and thread-level latency hiding.",
+        ));
 
         // Strategy B: Register-heavy warp tiling
         let (s_warp, u_warp) = {
             let mut score = 2.5;
-            if rf_val > 2.0 { score += 1.0; }
-            if arch.base >= 80 { score += 1.0; } 
-            if register_reuse_leverage.contains("very high") { score += 1.0; }
-            if is_small_m_n { score += 2.0; } // Warp tiling excels at small shapes
+            if rf_val > 2.0 {
+                score += 1.0;
+            }
+            if arch.base >= 80 {
+                score += 1.0;
+            }
+            if register_reuse_leverage.contains("very high") {
+                score += 1.0;
+            }
+            if is_small_m_n {
+                score += 2.0;
+            } // Warp tiling excels at small shapes
             (score + (1.0 - occ_val), 0.12) // Slightly more sensitive to compiler scheduling
         };
-        candidates.push(("Register-heavy warp tiling kernel (avoid spilling)", StrategyCategory::WarpTiling, s_warp, u_warp, "Optimized for large register files and high instruction-level parallelism."));
+        candidates.push((
+            "Register-heavy warp tiling kernel (avoid spilling)",
+            StrategyCategory::WarpTiling,
+            s_warp,
+            u_warp,
+            "Optimized for large register files and high instruction-level parallelism.",
+        ));
 
         // Strategy C: Tensor Core GEMM
         if derived.tensor_core_dominance > 0.0 {
             let (name, mut s_tensor, u_tensor) = if arch.base >= 90 {
                 ("WGMMA Tensor Core GEMM with TMA memory streams", 8.0, 0.25)
             } else if arch.base >= 80 {
-                ("Tensor Core GEMM with cp.async multi-stage pipelines", 7.5, 0.18)
+                (
+                    "Tensor Core GEMM with cp.async multi-stage pipelines",
+                    7.5,
+                    0.18,
+                )
             } else {
                 ("Tensor Core GEMM with double-buffered SMEM", 6.0, 0.10)
             };
-            if is_small_m_n && arch.base < 90 { s_tensor -= 2.0; } // Small TC tiles are inefficient on older archs
-            candidates.push((name, StrategyCategory::TensorCore, s_tensor, u_tensor, "Leverages dedicated matrix-multiplication hardware for peak throughput."));
+            if is_small_m_n && arch.base < 90 {
+                s_tensor -= 2.0;
+            } // Small TC tiles are inefficient on older archs
+            candidates.push((
+                name,
+                StrategyCategory::TensorCore,
+                s_tensor,
+                u_tensor,
+                "Leverages dedicated matrix-multiplication hardware for peak throughput.",
+            ));
         }
 
         // Strategy D: Persistent L2-resident fusion
         if persistent_fusion != Affinity::Low {
             let s_persistent = {
                 let mut score = 2.0;
-                if obs.l2_bytes.value >= 16 * 1024 * 1024 { score += 3.0; }
-                if persistence_viable(arch, &obs) { score += 1.0; }
-                if is_small_m_n { score += 1.5; } // Fusion is great for removing bandwidth bounds on small shapes
+                if obs.l2_bytes.value >= 16 * 1024 * 1024 {
+                    score += 3.0;
+                }
+                if persistence_viable(arch, &obs) {
+                    score += 1.0;
+                }
+                if is_small_m_n {
+                    score += 1.5;
+                } // Fusion is great for removing bandwidth bounds on small shapes
                 score
             };
-            candidates.push(("Persistent L2-resident fusion kernel", StrategyCategory::PersistentFusion, s_persistent, 0.20, "Minimizes global memory traffic by keeping tiles in the L2 cache."));
+            candidates.push((
+                "Persistent L2-resident fusion kernel",
+                StrategyCategory::PersistentFusion,
+                s_persistent,
+                0.20,
+                "Minimizes global memory traffic by keeping tiles in the L2 cache.",
+            ));
         }
 
         // Strategy E: Split-K
         if split_k_viability.contains("Advisable") || (is_large_k && is_skinny) {
             let s_split = if is_large_k && is_skinny { 5.5 } else { 3.0 };
-            candidates.push(("Split-K reduction kernel", StrategyCategory::SplitK, s_split, 0.15, "Increases parallelism by partitioning the K dimension across multiple blocks."));
+            candidates.push((
+                "Split-K reduction kernel",
+                StrategyCategory::SplitK,
+                s_split,
+                0.15,
+                "Increases parallelism by partitioning the K dimension across multiple blocks.",
+            ));
         }
 
         // Apply Softmax (Temperature = 1.0)
         let exp_scores: Vec<f32> = candidates.iter().map(|&(_, _, s, _, _)| s.exp()).collect();
         let sum_exp: f32 = exp_scores.iter().sum();
-        
+
         for (i, &(strategy, category, _, uncertainty, reasoning)) in candidates.iter().enumerate() {
             likelihood_distribution.push(KernelPrediction {
                 strategy: strategy.to_string(),
@@ -2157,7 +2412,7 @@ impl PredictorPrior {
                 reasoning: reasoning.to_string(),
             });
         }
-        
+
         likelihood_distribution.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
 
         let shape_classification = classify_shape(&obs, &shape);
@@ -2165,10 +2420,12 @@ impl PredictorPrior {
         let is_calibrated = calibration_state.is_some() && state.samples_absorbed > 0;
 
         let mut diagnostics = Vec::new();
-        if performance_signature.scheduler_model.warp_ready_prob.mean < 0.1 && performance_signature.flop_utilization.mean > 0.8 {
+        if performance_signature.scheduler_model.warp_ready_prob.mean < 0.1
+            && performance_signature.flop_utilization.mean > 0.8
+        {
             diagnostics.push("INCONSISTENCY: High FLOP utilization predicted despite severely low warp readiness.".to_string());
         }
-        
+
         let bytes_per_elem = match dtype {
             DType::Int8 | DType::Fp8 => 1.0,
             DType::Fp16 | DType::Bf16 => 2.0,
@@ -2178,15 +2435,21 @@ impl PredictorPrior {
         let n = shape.n as f64;
         let k = shape.k as f64;
         let min_dram_bytes = bytes_per_elem * (m * k + k * n + m * n);
-        
+
         if performance_signature.cache_model.dram_traffic_bytes < min_dram_bytes * 0.95 {
-             diagnostics.push("INCONSISTENCY: Simulated DRAM traffic is lower than the theoretical compulsory minimum.".to_string());
+            diagnostics.push("INCONSISTENCY: Simulated DRAM traffic is lower than the theoretical compulsory minimum.".to_string());
         }
 
         let confidence_breakdown = ConfidenceBreakdown {
             regime: regime_confidence,
-            memory_model: (1.0 - performance_signature.cache_model.dram_miss_rate.mean * 0.5 - performance_signature.cache_model.l1_hit_rate.mean * 0.5).clamp(0.4, 0.95),
-            scheduler_model: (1.0 - performance_signature.scheduler_model.replay_rate.mean * 2.0 - performance_signature.scheduler_model.pipe_pressure.mean * 0.5).clamp(0.4, 0.95),
+            memory_model: (1.0
+                - performance_signature.cache_model.dram_miss_rate.mean * 0.5
+                - performance_signature.cache_model.l1_hit_rate.mean * 0.5)
+                .clamp(0.4, 0.95),
+            scheduler_model: (1.0
+                - performance_signature.scheduler_model.replay_rate.mean * 2.0
+                - performance_signature.scheduler_model.pipe_pressure.mean * 0.5)
+                .clamp(0.4, 0.95),
         };
 
         let hardware_observed = HardwareObserved {
@@ -2240,7 +2503,9 @@ impl PredictorPrior {
 
         for (k, &v) in performance_signature.dominant_limits.iter() {
             match k.as_str() {
-                "tensor_unit_throughput" | "fp32_throughput" | "sfau_throughput" => compute_prob += v * 1.5, // Bias towards compute for scientific kernels
+                "tensor_unit_throughput" | "fp32_throughput" | "sfau_throughput" => {
+                    compute_prob += v * 1.5
+                } // Bias towards compute for scientific kernels
                 "dram_bandwidth" | "l2_bandwidth" | "tex_bandwidth" => mem_prob += v,
                 _ => balanced_prob += v,
             }
@@ -2268,12 +2533,16 @@ impl PredictorPrior {
         let n = shape.n as f64;
         let k = shape.k as f64;
         let t_ideal = (2.0 * m * n * k) / (obs.fp32_flops_tflops.value as f64 * 1e12);
-        let expected_runtime_us = (t_ideal / performance_signature.flop_utilization.mean as f64 * 1e6) as f32;
+        let expected_runtime_us =
+            (t_ideal / performance_signature.flop_utilization.mean as f64 * 1e6) as f32;
 
         let performance_posteriors = PerformancePosteriors {
             // MLSys-grade correction: sigma_runtime is relative (coefficient of variation),
             // so we scale it by the mean to get absolute microseconds.
-            runtime_us: GaussianPrior::new(expected_runtime_us, expected_runtime_us * performance_signature.uncertainty.sigma_runtime),
+            runtime_us: GaussianPrior::new(
+                expected_runtime_us,
+                expected_runtime_us * performance_signature.uncertainty.sigma_runtime,
+            ),
             flop_utilization: performance_signature.flop_utilization.clone(),
             bw_utilization: performance_signature.bw_utilization.clone(),
         };
@@ -2331,8 +2600,6 @@ impl PredictorPrior {
                 persistent_fusion,
             },
         }
-
-
     }
 
     /// Emits the top-ranked kernel intent for machine consumption (codegen/autotuning).
@@ -2340,15 +2607,17 @@ impl PredictorPrior {
         self.search_prior.candidate_kernels.first().map(|p| {
             let family = &p.strategy;
             // Determine tile strategy and pipeline depth based on architecture class
-            let (tile_strategy, pipeline_depth) = match self.derived_metrics.architectural_model.profile.arch_class {
-                ExecutionArchClass::DataflowGpu => ("tmem_dataflow", 4),
-                ExecutionArchClass::PipelineGpu => ("tma_pipelined", 3),
-                ExecutionArchClass::AsyncTensor => ("async_pipelined", 2),
-                _ => ("smem_blocked_double_buffered", 2),
-            };
+            let (tile_strategy, pipeline_depth) =
+                match self.derived_metrics.architectural_model.profile.arch_class {
+                    ExecutionArchClass::DataflowGpu => ("tmem_dataflow", 4),
+                    ExecutionArchClass::PipelineGpu => ("tma_pipelined", 3),
+                    ExecutionArchClass::AsyncTensor => ("async_pipelined", 2),
+                    _ => ("smem_blocked_double_buffered", 2),
+                };
 
             // Derive occupancy target from the predicted range
-            let occupancy_target = self.derived_metrics.reuse_model.occupancy_window.0 as f32 / 100.0;
+            let occupancy_target =
+                self.derived_metrics.reuse_model.occupancy_window.0 as f32 / 100.0;
             let regime_conf = self.inference.confidence_breakdown.regime;
 
             KernelIntent {
@@ -2364,13 +2633,15 @@ impl PredictorPrior {
                 shape_class: self.workload_observed.shape_classification.clone(),
                 shape_manifold: self.derived_metrics.reuse_model.shape_manifold.clone(),
                 // Maps InferredState to the legacy-ish PerformanceSignature for machine consumption
-                // or we could update KernelIntent to be hierarchical too. For now, let's keep it 
+                // or we could update KernelIntent to be hierarchical too. For now, let's keep it
                 // but populate from posteriors.
                 performance_signature: self.reconstruct_signature(),
                 expected_runtime_us: self.inference.performance_posteriors.runtime_us.mean,
                 runtime_interval_us: [
-                    self.inference.performance_posteriors.runtime_us.mean - 2.0 * self.inference.performance_posteriors.runtime_us.stddev,
-                    self.inference.performance_posteriors.runtime_us.mean + 2.0 * self.inference.performance_posteriors.runtime_us.stddev,
+                    self.inference.performance_posteriors.runtime_us.mean
+                        - 2.0 * self.inference.performance_posteriors.runtime_us.stddev,
+                    self.inference.performance_posteriors.runtime_us.mean
+                        + 2.0 * self.inference.performance_posteriors.runtime_us.stddev,
                 ],
                 runtime_confidence: regime_conf * 0.8, // Slightly lower confidence for runtime
                 verification_targets: self.derive_verification_targets(),
@@ -2383,14 +2654,26 @@ impl PredictorPrior {
     fn reconstruct_signature(&self) -> PerformanceSignature {
         PerformanceSignature {
             regime: "inferred".to_string(), // Placeholder
-            flop_utilization: self.inference.performance_posteriors.flop_utilization.clone(),
+            flop_utilization: self
+                .inference
+                .performance_posteriors
+                .flop_utilization
+                .clone(),
             bw_utilization: self.inference.performance_posteriors.bw_utilization.clone(),
             scheduler_model: SchedulerModelRep {
                 warp_ready_prob: GaussianPrior::new(0.9, 0.1), // Approximate or store
                 dep_chain_len: 4.0,
-                pipe_pressure: self.inference.resource_pressure_models.scheduler_pressure.clone(),
+                pipe_pressure: self
+                    .inference
+                    .resource_pressure_models
+                    .scheduler_pressure
+                    .clone(),
                 replay_rate: GaussianPrior::new(0.05, 0.0316),
-                issue_rate: self.inference.resource_pressure_models.scheduler_pressure.clone(),
+                issue_rate: self
+                    .inference
+                    .resource_pressure_models
+                    .scheduler_pressure
+                    .clone(),
             },
             cache_model: CacheHierarchyModel {
                 l1_hit_rate: self.inference.memory_model.l1_hit_rate.clone(),
@@ -2407,7 +2690,12 @@ impl PredictorPrior {
             },
             risk_of_spill: self.inference.resource_pressure_models.spill_risk.clone(),
             dominant_limits: self.inference.execution_regime.to_hashmap(),
-            predictability: PredictabilityModel { score: 0.9, divergence_risk: 0.05, memory_contention_risk: 0.05, rationale: "auto".to_string() },
+            predictability: PredictabilityModel {
+                score: 0.9,
+                divergence_risk: 0.05,
+                memory_contention_risk: 0.05,
+                rationale: "auto".to_string(),
+            },
         }
     }
 
@@ -2415,10 +2703,12 @@ impl PredictorPrior {
     fn derive_verification_targets(&self) -> VerificationTargets {
         let pp = &self.inference.performance_posteriors;
         let er = &self.inference.execution_regime;
-        
+
         let expected_smem_reuse = if self.workload_observed.problem_shape.k > 1024 {
             "high (K-blocking leverage)".to_string()
-        } else if self.workload_observed.problem_shape.m > 256 || self.workload_observed.problem_shape.n > 256 {
+        } else if self.workload_observed.problem_shape.m > 256
+            || self.workload_observed.problem_shape.n > 256
+        {
             "medium (Tile-level reuse)".to_string()
         } else {
             "minimal (Shape too small for blocking residency)".to_string()
@@ -2443,12 +2733,21 @@ impl PredictorPrior {
 
     /// Adjusts strategy probabilities based on recorded hardware feedback.
     pub fn apply_feedback(&mut self, facts: &[FeedbackFact]) {
-        if facts.is_empty() { return; }
+        if facts.is_empty() {
+            return;
+        }
 
         for fact in facts {
             // Check if this fact belongs to this architecture and requested precision
-            if fact.arch_base == self.hardware_observed.arch_base_cc && fact.dtype == self.workload_observed.feasibility.requested_dtype {
-                if let Some(pred) = self.search_prior.candidate_kernels.iter_mut().find(|p| p.strategy == fact.strategy) {
+            if fact.arch_base == self.hardware_observed.arch_base_cc
+                && fact.dtype == self.workload_observed.feasibility.requested_dtype
+            {
+                if let Some(pred) = self
+                    .search_prior
+                    .candidate_kernels
+                    .iter_mut()
+                    .find(|p| p.strategy == fact.strategy)
+                {
                     // Update probability based on relative error (simple proportional shift)
                     let error_ratio = fact.observed_tflops / fact.predicted_tflops;
                     if error_ratio < 0.7 {
@@ -2461,15 +2760,22 @@ impl PredictorPrior {
         }
 
         // Renormalize distribution
-        let sum: f32 = self.search_prior.candidate_kernels.iter().map(|p| p.probability).sum();
+        let sum: f32 = self
+            .search_prior
+            .candidate_kernels
+            .iter()
+            .map(|p| p.probability)
+            .sum();
         if sum > 0.0 {
             for p in &mut self.search_prior.candidate_kernels {
                 p.probability /= sum;
             }
         }
-        
+
         // Re-sort strategies based on updated probabilities
-        self.search_prior.candidate_kernels.sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
+        self.search_prior
+            .candidate_kernels
+            .sort_by(|a, b| b.probability.partial_cmp(&a.probability).unwrap());
     }
 
     /// Samples N candidate configurations weighted by their predicted performance scores.
@@ -2480,14 +2786,16 @@ impl PredictorPrior {
         // For each strategy in our distribution, cross-product with the search space
         for prediction in &self.search_prior.candidate_kernels {
             let strategy_weight = prediction.probability;
-            
+
             // Total possible configs for this strategy
-            let total_combos = (ss.plausible_block_sizes.len() * 
-                               ss.plausible_k_blocking.len() * 
-                               ss.smem_stages.len()) as f32;
-            
-            if total_combos == 0.0 { continue; }
-            
+            let total_combos = (ss.plausible_block_sizes.len()
+                * ss.plausible_k_blocking.len()
+                * ss.smem_stages.len()) as f32;
+
+            if total_combos == 0.0 {
+                continue;
+            }
+
             let combo_weight = strategy_weight / total_combos;
 
             for &block_size in &ss.plausible_block_sizes {
@@ -2500,8 +2808,10 @@ impl PredictorPrior {
                             smem_stages: stages,
                             weight: combo_weight,
                         });
-                        
-                        if samples.len() >= limit * 2 { break; }
+
+                        if samples.len() >= limit * 2 {
+                            break;
+                        }
                     }
                 }
             }
@@ -2558,7 +2868,7 @@ fn derive_search_space(
 
     // Refine based on register file (max_tile_k_fp32/fp16)
     if derived.max_tile_k_fp32 < 32 {
-         block_sizes.retain(|&(m, n)| (m * n) <= 128 * 64);
+        block_sizes.retain(|&(m, n)| (m * n) <= 128 * 64);
     }
 
     SearchSpace {
@@ -2568,12 +2878,12 @@ fn derive_search_space(
     }
 }
 
-
 fn classify_shape(obs: &ArchObservables, shape: &ProblemShape) -> ShapeClassification {
     let (m, n, k) = (shape.m as f32, shape.n as f32, shape.k as f32);
-    
+
     // Rationale suffix depends on architecture capability
-    let async_support = obs.tensor_core_flops_tflops.value > 0.0 && obs.shared_mem_bandwidth_gbps.value > 5000.0;
+    let async_support =
+        obs.tensor_core_flops_tflops.value > 0.0 && obs.shared_mem_bandwidth_gbps.value > 5000.0;
     let overlap_rationale = if async_support {
         "use asynchronous staging to hide latency.".to_string()
     } else {
@@ -2608,7 +2918,10 @@ fn classify_shape(obs: &ArchObservables, shape: &ProblemShape) -> ShapeClassific
         ShapeClassification {
             case: ShapeCase::KDominant,
             dominant_axis: "K".to_string(),
-            tiling_rationale: format!("K-dominant reduction; maximize reuse along K axis and {}", overlap_rationale),
+            tiling_rationale: format!(
+                "K-dominant reduction; maximize reuse along K axis and {}",
+                overlap_rationale
+            ),
         }
     } else {
         ShapeClassification {
@@ -2623,7 +2936,7 @@ fn derive_shape_manifold(shape: &ProblemShape, derived: &DerivedProperties) -> S
     let m = shape.m as f64;
     let n = shape.n as f64;
     let k = shape.k as f64;
-    
+
     // Normalize volume relative to a "standard large tile" (e.g., 4096^3)
     let standard_vol = 4096.0 * 4096.0 * 4096.0;
     let vol = m * n * k;
@@ -2634,7 +2947,9 @@ fn derive_shape_manifold(shape: &ProblemShape, derived: &DerivedProperties) -> S
     let total_bytes = bytes_per_elem * (m * k + k * n + m * n);
     let intensity = (total_flops / total_bytes) as f32;
 
-    let is_power_of_two = (m as usize).is_power_of_two() && (n as usize).is_power_of_two() && (k as usize).is_power_of_two();
+    let is_power_of_two = (m as usize).is_power_of_two()
+        && (n as usize).is_power_of_two()
+        && (k as usize).is_power_of_two();
     let is_small = m < 128.0 || n < 128.0 || k < 128.0;
 
     let cluster = if m <= 16.0 && n > 1024.0 {
@@ -2670,19 +2985,19 @@ fn estimate_performance_signature(
     let n = shape.n as f64;
     let k = shape.k as f64;
     let bytes_per_elem = 2.0; // Assume Fp16/Bf16 baseline
-    
+
     let total_flops = 2.0 * m * n * k;
     let total_bytes = bytes_per_elem * (m * k + k * n + m * n);
-    
+
     // Memory Traffic Floor (Phase 28)
     // Minimum theoretical data movement (loads of A, B; store of C)
     let min_dram_bytes = bytes_per_elem * (m * k + k * n + m * n);
-    
+
     let intensity = total_flops / total_bytes;
 
     // Detect if Tensor Cores are available and the primary engine
     let has_tensor_cores = arch.base >= 70;
-    
+
     // Peak compute (select the correct engine)
     let peak_tflops = if has_tensor_cores {
         obs.tensor_core_flops_tflops.effective() as f64
@@ -2695,47 +3010,47 @@ fn estimate_performance_signature(
 
     // Actual time bound by compute using peaks
     let min_compute_time_s = total_flops / (peak_tflops * 1e12);
-    
+
     // ── Phase 37: Hierarchical Probabilistic Memory Model ──
     let peak_l2_bw = obs.l2_bandwidth_gbps.effective() as f64;
     let peak_l1_bw = obs.shared_mem_bandwidth_gbps.effective() as f64;
-    
+
     // Total scalar accesses for the entire GEMM (baseline without SMEM caches)
-    let total_scalar_bytes = total_flops * bytes_per_elem; 
-    
+    let total_scalar_bytes = total_flops * bytes_per_elem;
+
     // ── Phase 44: Formal Cache & Memory Reuse Model ──
     // L1 hit rate on modern GPUs for global memory is low (often bypassed or streaming-only)
     // Local memory/SMEM handles the bulk of the "hits"
-    let l1_hit_rate = 0.20_f32; 
-    
+    let l1_hit_rate = 0.20_f32;
+
     // Effective algorithmic reuse factor from matrix blocking
     let algorithmic_reuse = if m >= 128.0 && n >= 128.0 {
         128.0 // standard GEMM tile blocking limit
     } else {
         (m.min(128.0) * n.min(128.0)).sqrt().max(1.0) as f64
     };
-    
+
     let smem_hit_rate = (1.0 - 1.0 / algorithmic_reuse).clamp(0.5, 0.999);
-    
+
     // Global memory traffic (requested from L2 because it missed both SMEM and L1)
     let combined_miss_rate = (1.0 - smem_hit_rate) * (1.0 - l1_hit_rate as f64);
     let l2_traffic_bytes = total_scalar_bytes * combined_miss_rate;
-    
+
     // L2 hit rate: based on working set (min_dram_bytes) vs L2 capacity
     let l2_capacity = obs.l2_bytes.value as f64;
-    let working_set_bytes = min_dram_bytes; 
-    
+    let working_set_bytes = min_dram_bytes;
+
     let l2_capacity_ratio = l2_capacity / working_set_bytes.max(1.0);
     // Sigmoid hit rate for L2: sensitive to capacity pressure
     let l2_logit = 4.0 * l2_capacity_ratio.log2() + 1.0;
     let l2_hit_rate = (1.0 / (1.0 + (-l2_logit).exp())).clamp(0.05, 0.95) as f32;
-    
+
     let dram_miss_rate = 1.0 - l2_hit_rate;
-    
+
     // DRAM traffic: Must at least read the compulsory minimum data (min_dram_bytes)
     // plus any capacity/conflict misses from the L2 cache over that working set.
     let dram_traffic_bytes = min_dram_bytes.max(l2_traffic_bytes * dram_miss_rate as f64);
-    
+
     let cache_model = CacheHierarchyModel {
         l1_hit_rate: GaussianPrior::new(l1_hit_rate, 0.223), // 0.05 variance -> ~0.223 stddev
         l2_hit_rate: GaussianPrior::new(l2_hit_rate, 0.387),
@@ -2744,33 +3059,32 @@ fn estimate_performance_signature(
         dram_traffic_bytes,
     };
 
-    
     // Calculate time taken traversing the pipelined cache hierarchy
     let l1_time_s = total_scalar_bytes * (1.0 - smem_hit_rate) / (peak_l1_bw * 1e9);
     let l2_time_s = l2_traffic_bytes / (peak_l2_bw * 1e9);
     let dram_time_s = dram_traffic_bytes / (peak_bw * 1e9);
-    
+
     // Total memory stall time is the maximum structural stall (since memory layers are pipelined)
     let min_dram_time_s = l1_time_s.max(l2_time_s).max(dram_time_s);
-    
+
     let is_compute_bound = min_compute_time_s >= min_dram_time_s;
-    
+
     // Calculate posterior regime distribution
     let total_time_s = min_compute_time_s + min_dram_time_s;
     let mut dominant_limits = std::collections::HashMap::new();
-    
+
     let compute_limit_name = if has_tensor_cores {
         "tensor_unit_throughput"
     } else {
         "scheduler_issue + ILP"
     };
-    
+
     // Bayesian Normalization: compute_prob + memory_prob = 1.0
     // This ensures we have a valid discrete probability distribution over regimes.
     let norm = min_compute_time_s + min_dram_time_s;
     let compute_prob = (min_compute_time_s / norm.max(1e-9)) as f32;
     let memory_prob = (min_dram_time_s / norm.max(1e-9)) as f32;
-    
+
     dominant_limits.insert(compute_limit_name.to_string(), compute_prob);
     dominant_limits.insert("dram_bandwidth".to_string(), memory_prob);
 
@@ -2799,14 +3113,18 @@ fn estimate_performance_signature(
 
     // Utilization estimates (Nuanced Modeling Phase 26 & 28)
     // Small shapes (m, n < 128) suffer from wave quantization and launch overhead
-    let shape_penalty = if shape.m < 128usize || shape.n < 128usize { 0.7 } else { 0.95 };
-    
-    let mut flop_util = if is_compute_bound { 
-        0.65 * shape_penalty 
-    } else { 
-        (intensity / machine_balance) * shape_penalty 
+    let shape_penalty = if shape.m < 128usize || shape.n < 128usize {
+        0.7
+    } else {
+        0.95
     };
-    
+
+    let mut flop_util = if is_compute_bound {
+        0.65 * shape_penalty
+    } else {
+        (intensity / machine_balance) * shape_penalty
+    };
+
     // Phase 28: Realistic BW Floor
     // Calculate the absolute minimum bandwidth utilized just to move the theoretical minimal bytes
     // in the time it takes to compute the operations (if compute bound) or memory bound.
@@ -2815,12 +3133,12 @@ fn estimate_performance_signature(
     let minimum_bw_util = (min_dram_bytes / expected_runtime_s) / (peak_bw * 1e9);
 
     let reuse_multiplier = if shape.k > 1024usize { 0.6 } else { 0.9 };
-    
-    let mut bw_util = if is_compute_bound { 
+
+    let mut bw_util = if is_compute_bound {
         // Even if compute bound, we still use minimum BW. Plus extra traffic from poor reuse.
         minimum_bw_util.max((machine_balance / intensity) * reuse_multiplier)
-    } else { 
-        0.8 * reuse_multiplier 
+    } else {
+        0.8 * reuse_multiplier
     };
 
     // Apply auto-calibration scaling coefficients
@@ -2831,47 +3149,56 @@ fn estimate_performance_signature(
     flop_util = flop_util.min(0.9);
     bw_util = bw_util.clamp(0.15, 0.95); // Enforce realistic physical floor
 
-    let is_power_of_two = (m as usize).is_power_of_two() && (n as usize).is_power_of_two() && (k as usize).is_power_of_two();
+    let is_power_of_two = (m as usize).is_power_of_two()
+        && (n as usize).is_power_of_two()
+        && (k as usize).is_power_of_two();
     let is_small = m < 128.0 || n < 128.0 || k < 128.0;
 
     // Divergence risk increases if shapes are not powers of two (requiring bounds checking in the kernel).
     // Framed as a proxy for boundary condition predication overhead and warp-level branching.
-    let divergence_risk = if is_power_of_two { 0.05 } else { 0.35 } + if is_small { 0.2 } else { 0.0 };
+    let divergence_risk =
+        if is_power_of_two { 0.05 } else { 0.35 } + if is_small { 0.2 } else { 0.0 };
 
     // ── Phase 44: Formal Generative Scheduler Model ──
     let occ = derived.reference_occupancy_32regs.clamp(0.1, 1.0);
     // memory stall prob is now much smaller since DRAM traffic is correct, but we still scale it gently
     let mem_stall_prob = min_dram_time_s / total_time_s.max(1e-9);
-    
+
     // P(Warp Ready) modeled as a logistic function of occupancy, memory stalls, and divergence.
     // Empirically tuned logistic scheduler model (calibrated on microbench suite).
     let logit_ready = 5.0 * (occ as f32) - 2.0 * (mem_stall_prob as f32) - 2.0 * divergence_risk;
     let warp_ready_prob = 1.0 / (1.0 + (-logit_ready).exp());
-    
+
     // Deeper dependency chains for Tensor Cores
     let dep_chain_len = if has_tensor_cores { 8.0 } else { 4.0 };
-    
+
     // P(Issue Success) modeled as a logistic function of warp readiness, structural hazards, and replay rate
     let dual_issue_factor = if arch.base >= 80 { 0.7 } else { 1.0 };
-    let structural_hazard_penalty = (compute_prob as f32) * dual_issue_factor * calib.pressure_tune_coeff;
-    
-    let replay_rate: f32 = if !is_power_of_two || is_small { 0.15 } else { 0.02 };
-    
+    let structural_hazard_penalty =
+        (compute_prob as f32) * dual_issue_factor * calib.pressure_tune_coeff;
+
+    let replay_rate: f32 = if !is_power_of_two || is_small {
+        0.15
+    } else {
+        0.02
+    };
+
     // Logit for issue success: highly depends on having a ready warp, penalized by hazards/replays.
     // Empirically calibrated coefficients for professional HPC workloads.
-    let logit_issue = 4.0 * warp_ready_prob - 2.0 * structural_hazard_penalty - 3.0 * replay_rate - 1.0;
-    
+    let logit_issue =
+        4.0 * warp_ready_prob - 2.0 * structural_hazard_penalty - 3.0 * replay_rate - 1.0;
+
     // Dispatch bandwidth limits the maximum *probability* of an issue slot being filled in this model
     let active_warps = (obs.max_warps_per_sm.value as f32 * occ).max(1.0);
     let schedulers = obs.schedulers_per_sm.value as f32;
     let dispatch_bandwidth_per_warp = (schedulers / active_warps).min(1.0);
-    
+
     let issue_prob_per_warp = warp_ready_prob
         .min(1.0 / (1.0 + (-logit_issue).exp()))
         .min(dispatch_bandwidth_per_warp)
         .min(1.0 - replay_rate.min(0.99))
         .clamp(0.01, 1.0);
-        
+
     // Scale up to represent total SM scheduler utilization
     // Paper-grade correction: Cap issue rate at 0.85 to maintain physical realism (perfect saturation is impossible)
     let issue_rate = (issue_prob_per_warp * active_warps / schedulers).clamp(0.0, 0.85);
@@ -2887,19 +3214,31 @@ fn estimate_performance_signature(
     };
 
     // Risk of spill: High if register heavy or huge tiles
-    let risk_of_spill = if derived.max_tile_k_fp32 < 16 { 0.7 } else { 0.1 };
+    let risk_of_spill = if derived.max_tile_k_fp32 < 16 {
+        0.7
+    } else {
+        0.1
+    };
 
     // ── Phase 32: Epistemic Predictability Model ──
-    
+
     // Memory contention risk is high if bandwidth utilization is clamped/high or shape provides poor reuse.
-    let memory_contention_risk = if (bw_util as f32) > 0.85 { 0.8 } else if shape.k < 128 { 0.5 } else { 0.1 };
-    
+    let memory_contention_risk = if (bw_util as f32) > 0.85 {
+        0.8
+    } else if shape.k < 128 {
+        0.5
+    } else {
+        0.1
+    };
+
     // Relative uncertainty from mixed bound regimes.
     let prob_diff = (compute_prob - memory_prob).abs();
-    let boundary_variance = 1.0 - prob_diff; 
-    
-    let variance_score = (divergence_risk * 0.4 + memory_contention_risk * 0.4 + boundary_variance * 0.2).clamp(0.0, 1.0);
-    
+    let boundary_variance = 1.0 - prob_diff;
+
+    let variance_score =
+        (divergence_risk * 0.4 + memory_contention_risk * 0.4 + boundary_variance * 0.2)
+            .clamp(0.0, 1.0);
+
     let rationale = if variance_score > 0.7 {
         "Low Predictability: High structural variance (mixed bounds or high divergence risk)."
     } else if variance_score > 0.4 {
@@ -2907,7 +3246,7 @@ fn estimate_performance_signature(
     } else {
         "High Predictability: Highly deterministic execution (clean bounds, clear limitation)."
     };
- 
+
     let predictability = PredictabilityModel {
         score: (1.0 - variance_score).clamp(0.0, 1.0), // High score = high predictability
         divergence_risk: divergence_risk.clamp(0.0, 1.0),
@@ -2919,21 +3258,29 @@ fn estimate_performance_signature(
     let samples = calib.samples_absorbed as f32;
     // Epistemic decays exponentially as we absorb more samples
     let epistemic_uncertainty = (0.3 * (-samples / 10.0).exp()).clamp(0.01, 0.3);
-    
+
     // Aleatoric comes purely from the kernel's inherent unpredictability
     let aleatoric_uncertainty = variance_score * 0.25;
-    
-    // Transfer uncertainty: if samples > 0 but coefficients are skewed, we might be 
+
+    // Transfer uncertainty: if samples > 0 but coefficients are skewed, we might be
     // operating on a translated prior from a different architecture. We estimate this
-    // heuristically based on how far coefficients have drifted from 1.0. 
-    let drift = (calib.flop_scale_coeff - 1.0).abs().max((calib.bw_scale_coeff - 1.0).abs());
-    let transfer_uncertainty = if samples == 0.0 { 0.0 } else { (drift * 0.1).clamp(0.0, 0.2) };
-    
+    // heuristically based on how far coefficients have drifted from 1.0.
+    let drift = (calib.flop_scale_coeff - 1.0)
+        .abs()
+        .max((calib.bw_scale_coeff - 1.0).abs());
+    let transfer_uncertainty = if samples == 0.0 {
+        0.0
+    } else {
+        (drift * 0.1).clamp(0.0, 0.2)
+    };
+
     // Pooled standard deviation (assuming independent variance sources)
-    let variance = epistemic_uncertainty.powi(2) + aleatoric_uncertainty.powi(2) + transfer_uncertainty.powi(2);
+    let variance = epistemic_uncertainty.powi(2)
+        + aleatoric_uncertainty.powi(2)
+        + transfer_uncertainty.powi(2);
     // Increase floor to 12% (0.12) to reflect realistic analytical model error
     let sigma_runtime = variance.sqrt().clamp(0.12, 0.5);
-    
+
     let uncertainty_state = CalibratedUncertainty {
         epistemic_uncertainty,
         aleatoric_uncertainty,
@@ -2990,28 +3337,38 @@ fn resolve_feasibility(arch: &GpuArch, dtype: DType) -> NumericFeasibility {
             storage_supported = arch.base >= 53;
             native_arithmetic = arch.base == 53 || arch.base == 60 || arch.base >= 70;
             tensor_core_available = arch.base >= 70;
-            
+
             if native_arithmetic {
                 throughput_ratio = if arch.base >= 70 { 8.0 } else { 2.0 }; // Tensor vs Packed
                 (true, DType::Fp16, "Native".to_string(), None)
             } else if storage_supported {
                 (false, DType::Fp32, "Promoted".to_string(), Some("Pascal SM architecture executes FP16 arithmetic via FP32 pipelines; no native half-precision throughput gain.".to_string()))
             } else {
-                (false, DType::Fp32, "Emulated".to_string(), Some("Hardware lacks FP16 ISA, remapped to FP32 compute.".to_string()))
+                (
+                    false,
+                    DType::Fp32,
+                    "Emulated".to_string(),
+                    Some("Hardware lacks FP16 ISA, remapped to FP32 compute.".to_string()),
+                )
             }
         }
         DType::Bf16 => {
             storage_supported = arch.base >= 80;
             native_arithmetic = arch.base >= 80;
             tensor_core_available = arch.base >= 80;
-            
+
             if arch.base >= 80 {
                 throughput_ratio = 8.0;
                 (true, DType::Bf16, "Native".to_string(), None)
             } else if arch.base >= 70 {
-                 (false, DType::Fp32, "Emulated".to_string(), Some("Hardware lacks native BF16 compute (Ampere+ required); software emulation via FP32.".to_string()))
+                (false, DType::Fp32, "Emulated".to_string(), Some("Hardware lacks native BF16 compute (Ampere+ required); software emulation via FP32.".to_string()))
             } else {
-                (false, DType::Fp32, "Emulated".to_string(), Some("Hardware lacks BF16 ISA, remapped to FP32 compute.".to_string()))
+                (
+                    false,
+                    DType::Fp32,
+                    "Emulated".to_string(),
+                    Some("Hardware lacks BF16 ISA, remapped to FP32 compute.".to_string()),
+                )
             }
         }
         DType::Fp8 => {
@@ -3037,7 +3394,14 @@ fn resolve_feasibility(arch: &GpuArch, dtype: DType) -> NumericFeasibility {
                 throughput_ratio = 4.0;
                 (true, DType::Int8, "Native".to_string(), None)
             } else {
-                (false, DType::Fp32, "Emulated".to_string(), Some("Native DP4A/INT8 requires CC 6.1+, remapped to FP32 compute.".to_string()))
+                (
+                    false,
+                    DType::Fp32,
+                    "Emulated".to_string(),
+                    Some(
+                        "Native DP4A/INT8 requires CC 6.1+, remapped to FP32 compute.".to_string(),
+                    ),
+                )
             }
         }
     };
@@ -3067,32 +3431,67 @@ mod tests {
         let arch = GpuArch::new(80); // Ampere
         let oracle = HardwarePredictor::new(arch, AnalyticalModel::default());
         let workload = WorkloadDesc {
-            shape: ProblemShape { m: 1024, n: 1024, k: 1024 },
+            shape: ProblemShape {
+                m: 1024,
+                n: 1024,
+                k: 1024,
+            },
             dtype: DType::Fp16,
             calibration: None,
         };
 
         let post = oracle.posterior(&workload);
-        
+        let constraints = oracle.kernel_constraints(&workload);
+        assert!(
+            !constraints.allows(StrategyCategory::TensorCore),
+            "Kernel constraints should forbid Tensor Cores for the current compute capability (sm_{}).",
+            arch.base
+        );
+
         // 1. Bayesian Coherence: Regime
-        assert!(post.execution_regime.is_coherent(), "Regime distribution not normalized: {:?}", post.execution_regime);
-        
+        assert!(
+            post.execution_regime.is_coherent(),
+            "Regime distribution not normalized: {:?}",
+            post.execution_regime
+        );
+
         // 2. Bayesian Coherence: Kernels
-        let kernel_sum: f32 = post.kernel_family_distribution.iter().map(|k| k.probability).sum();
-        assert!((kernel_sum - 1.0).abs() < 1e-4, "Kernel distribution not normalized: {}", kernel_sum);
+        let kernel_sum: f32 = post
+            .kernel_family_distribution
+            .iter()
+            .map(|k| k.probability)
+            .sum();
+        assert!(
+            (kernel_sum - 1.0).abs() < 1e-4,
+            "Kernel distribution not normalized: {}",
+            kernel_sum
+        );
 
         // 3. DType Integrity: Ampere FP16 is Native
-        let report = oracle.evaluate(&workload.shape, workload.dtype, None).unwrap();
+        let report = oracle
+            .evaluate(&workload.shape, workload.dtype, None)
+            .unwrap();
         assert!(report.workload_observed.feasibility.is_native);
-        assert_eq!(report.workload_observed.feasibility.effective_compute_dtype, DType::Fp16);
+        assert_eq!(
+            report.workload_observed.feasibility.effective_compute_dtype,
+            DType::Fp16
+        );
 
         // 4. Search Space Pruning
         let strategy = oracle.strategy_prior(&workload);
         let pruned_volume = strategy.search_space.volume();
         let naive_volume = SearchSpace::naive_volume();
-        let pruning_factor = if pruned_volume > 0 { naive_volume as f32 / pruned_volume as f32 } else { 1.0 };
+        let pruning_factor = if pruned_volume > 0 {
+            naive_volume as f32 / pruned_volume as f32
+        } else {
+            1.0
+        };
 
-        assert!(pruning_factor > 10.0, "Oracle failed to provide significant pruning: {}", pruning_factor);
+        assert!(
+            pruning_factor > 10.0,
+            "Oracle failed to provide significant pruning: {}",
+            pruning_factor
+        );
         println!("Ampere Pruning Factor: {:.1}x", pruning_factor);
     }
 
@@ -3101,22 +3500,38 @@ mod tests {
         let arch = GpuArch::new(61); // Pascal (GTX 1080 Ti)
         let oracle = HardwarePredictor::new(arch, AnalyticalModel::default());
         let workload = WorkloadDesc {
-            shape: ProblemShape { m: 1024, n: 1024, k: 1024 },
+            shape: ProblemShape {
+                m: 1024,
+                n: 1024,
+                k: 1024,
+            },
             dtype: DType::Fp16,
             calibration: None,
         };
 
         // 1. Semantic Honesty: Pascal FP16 is Promoted to FP32
-        let report = oracle.evaluate(&workload.shape, workload.dtype, None).unwrap();
+        let report = oracle
+            .evaluate(&workload.shape, workload.dtype, None)
+            .unwrap();
         assert!(!report.workload_observed.feasibility.is_native);
-        assert_eq!(report.workload_observed.feasibility.execution_mode, "Promoted");
-        assert_eq!(report.workload_observed.feasibility.effective_compute_dtype, DType::Fp32);
+        assert_eq!(
+            report.workload_observed.feasibility.execution_mode,
+            "Promoted"
+        );
+        assert_eq!(
+            report.workload_observed.feasibility.effective_compute_dtype,
+            DType::Fp32
+        );
 
         // 2. Strategy Shift: Pascal shouldn't use Tensor Cores
         let post = oracle.posterior(&workload);
         let top_strategy = &post.kernel_family_distribution[0];
-        assert!(top_strategy.category != StrategyCategory::TensorCore, "Pascal erroneously recommended Tensor Cores: {:?}", top_strategy.category);
-        
+        assert!(
+            top_strategy.category != StrategyCategory::TensorCore,
+            "Pascal erroneously recommended Tensor Cores: {:?}",
+            top_strategy.category
+        );
+
         // 3. IR Label Stability
         let mut labels = HashMap::new();
         oracle.annotate_node(&workload, &mut labels);
@@ -3135,7 +3550,11 @@ mod tests {
         let arch = GpuArch::new(80);
         let oracle = HardwarePredictor::new(arch, AnalyticalModel::default());
         let workload = WorkloadDesc {
-            shape: ProblemShape { m: 4096, n: 4096, k: 4096 },
+            shape: ProblemShape {
+                m: 4096,
+                n: 4096,
+                k: 4096,
+            },
             dtype: DType::Fp16,
             calibration: None,
         };
@@ -3143,13 +3562,22 @@ mod tests {
         let post = oracle.posterior(&workload);
 
         // 1. Joint Probability Sum
-        let kernel_sum: f32 = post.kernel_family_distribution.iter().map(|k| k.probability).sum();
+        let kernel_sum: f32 = post
+            .kernel_family_distribution
+            .iter()
+            .map(|k| k.probability)
+            .sum();
         assert!((kernel_sum - 1.0).abs() < 1e-5);
 
         // 2. Hierarchical Coherence
         let regime = post.execution_regime.argmax();
         let top_kernel = &post.kernel_family_distribution[0];
-        assert!(top_kernel.compatible_with(regime), "Top kernel '{:?}' incompatible with dominant regime '{:?}'", top_kernel.strategy, regime);
+        assert!(
+            top_kernel.compatible_with(regime),
+            "Top kernel '{:?}' incompatible with dominant regime '{:?}'",
+            top_kernel.strategy,
+            regime
+        );
     }
 
     #[test]
@@ -3172,18 +3600,36 @@ mod tests {
         let arch = GpuArch::new(80);
         let oracle = HardwarePredictor::new(arch, AnalyticalModel::default());
 
-        let small = ProblemShape { m: 512, n: 512, k: 512 };
-        let big   = ProblemShape { m: 2048, n: 2048, k: 2048 };
+        let small = ProblemShape {
+            m: 512,
+            n: 512,
+            k: 512,
+        };
+        let big = ProblemShape {
+            m: 2048,
+            n: 2048,
+            k: 2048,
+        };
 
         let r_small_report = oracle.evaluate(&small, DType::Fp16, None).unwrap();
-        let r_big_report   = oracle.evaluate(&big,   DType::Fp16, None).unwrap();
+        let r_big_report = oracle.evaluate(&big, DType::Fp16, None).unwrap();
 
-        let r_small = r_small_report.inference.performance_posteriors.runtime_us.mean;
-        let r_big   = r_big_report.inference.performance_posteriors.runtime_us.mean;
+        let r_small = r_small_report
+            .inference
+            .performance_posteriors
+            .runtime_us
+            .mean;
+        let r_big = r_big_report
+            .inference
+            .performance_posteriors
+            .runtime_us
+            .mean;
 
         assert!(
             r_big >= r_small * 0.8,
-            "Model violates physical plausibility margin: {} < {} * 0.8", r_big, r_small
+            "Model violates physical plausibility margin: {} < {} * 0.8",
+            r_big,
+            r_small
         );
     }
 
@@ -3192,15 +3638,23 @@ mod tests {
         let arch = GpuArch::new(80);
         let oracle = HardwarePredictor::new(arch, AnalyticalModel::default());
         let workload = WorkloadDesc {
-            shape: ProblemShape { m: 1024, n: 1024, k: 1024 },
+            shape: ProblemShape {
+                m: 1024,
+                n: 1024,
+                k: 1024,
+            },
             dtype: DType::Fp16,
             calibration: None,
         };
 
         let p1 = oracle.posterior(&workload);
         let p2 = oracle.posterior(&workload);
-        
-        for (k1, k2) in p1.kernel_family_distribution.iter().zip(&p2.kernel_family_distribution) {
+
+        for (k1, k2) in p1
+            .kernel_family_distribution
+            .iter()
+            .zip(&p2.kernel_family_distribution)
+        {
             assert!(approx_eq(k1.probability, k2.probability));
         }
     }
@@ -3211,7 +3665,11 @@ mod tests {
         let oracle = HardwarePredictor::new(arch, AnalyticalModel::default());
 
         let calibrated_workload = WorkloadDesc {
-            shape: ProblemShape { m: 2048, n: 2048, k: 2048 },
+            shape: ProblemShape {
+                m: 2048,
+                n: 2048,
+                k: 2048,
+            },
             dtype: DType::Fp16,
             calibration: Some(CalibrationState {
                 flop_scale_coeff: 1.2,
@@ -3232,7 +3690,9 @@ mod tests {
 
         assert!(
             s_unc >= s_cal,
-            "Oracle does not reflect epistemic uncertainty: unc_stddev={} cal_stddev={}", s_unc, s_cal
+            "Oracle does not reflect epistemic uncertainty: unc_stddev={} cal_stddev={}",
+            s_unc,
+            s_cal
         );
     }
 
@@ -3242,7 +3702,11 @@ mod tests {
         let arch = GpuArch::new(80);
         let mut oracle = HardwarePredictor::new(arch, BayesianModel::default());
         let workload = WorkloadDesc {
-            shape: ProblemShape { m: 2048, n: 2048, k: 2048 },
+            shape: ProblemShape {
+                m: 2048,
+                n: 2048,
+                k: 2048,
+            },
             dtype: DType::Fp16,
             calibration: None,
         };
@@ -3266,7 +3730,12 @@ mod tests {
         let r1 = p1.performance_posteriors.runtime_us.mean;
         let r2 = p2.performance_posteriors.runtime_us.mean;
 
-        assert!((r1 - r2).abs() > 1.0, "Posterior runtime did not evolve after update: {} -> {}", r1, r2);
+        assert!(
+            (r1 - r2).abs() > 1.0,
+            "Posterior runtime did not evolve after update: {} -> {}",
+            r1,
+            r2
+        );
     }
 
     #[test]
@@ -3276,10 +3745,26 @@ mod tests {
         let oracle_p = HardwarePredictor::new(pascal, AnalyticalModel::default());
         let oracle_a = HardwarePredictor::new(ampere, AnalyticalModel::default());
 
-        let shape = ProblemShape { m: 2048, n: 2048, k: 2048 };
+        let shape = ProblemShape {
+            m: 2048,
+            n: 2048,
+            k: 2048,
+        };
         // FP16 is emulated/promoted on Pascal (slow), native on Ampere (fast)
-        let t_pascal = oracle_p.evaluate(&shape, DType::Fp16, None).unwrap().inference.performance_posteriors.runtime_us.mean;
-        let t_ampere = oracle_a.evaluate(&shape, DType::Fp16, None).unwrap().inference.performance_posteriors.runtime_us.mean;
+        let t_pascal = oracle_p
+            .evaluate(&shape, DType::Fp16, None)
+            .unwrap()
+            .inference
+            .performance_posteriors
+            .runtime_us
+            .mean;
+        let t_ampere = oracle_a
+            .evaluate(&shape, DType::Fp16, None)
+            .unwrap()
+            .inference
+            .performance_posteriors
+            .runtime_us
+            .mean;
 
         assert!(t_ampere < t_pascal * 0.7, "Ampere should be significantly faster than Pascal for FP16 GEMM. Ampere: {}us, Pascal: {}us", t_ampere, t_pascal);
     }
@@ -3291,23 +3776,39 @@ mod tests {
 
         // Compute Bound Case (Large K, high arithmetic intensity)
         let compute_workload = WorkloadDesc {
-            shape: ProblemShape { m: 512, n: 512, k: 16384 },
+            shape: ProblemShape {
+                m: 512,
+                n: 512,
+                k: 16384,
+            },
             dtype: DType::Fp16,
             calibration: None,
         };
         let p_compute = oracle.posterior(&compute_workload);
         let regime_c = p_compute.execution_regime.argmax();
-        assert!(matches!(regime_c, RegimeClass::Compute), "Large K should be Compute bound, got {:?}", regime_c);
+        assert!(
+            matches!(regime_c, RegimeClass::Compute),
+            "Large K should be Compute bound, got {:?}",
+            regime_c
+        );
 
         // Memory Bound Case (Large M/N, small K, low arithmetic intensity)
         let memory_workload = WorkloadDesc {
-            shape: ProblemShape { m: 8192, n: 8192, k: 32 },
+            shape: ProblemShape {
+                m: 8192,
+                n: 8192,
+                k: 32,
+            },
             dtype: DType::Fp16,
             calibration: None,
         };
         let p_memory = oracle.posterior(&memory_workload);
         let regime_m = p_memory.execution_regime.argmax();
-        assert!(matches!(regime_m, RegimeClass::Memory), "Large M/N with small K should be Memory bound, got {:?}", regime_m);
+        assert!(
+            matches!(regime_m, RegimeClass::Memory),
+            "Large M/N with small K should be Memory bound, got {:?}",
+            regime_m
+        );
     }
 
     #[test]
@@ -3315,7 +3816,11 @@ mod tests {
         let arch = GpuArch::new(80);
         let mut oracle = HardwarePredictor::new(arch, BayesianModel::default());
         let workload = WorkloadDesc {
-            shape: ProblemShape { m: 2048, n: 2048, k: 2048 },
+            shape: ProblemShape {
+                m: 2048,
+                n: 2048,
+                k: 2048,
+            },
             dtype: DType::Fp16,
             calibration: None,
         };
@@ -3342,6 +3847,11 @@ mod tests {
         let t_cal = p_cal.performance_posteriors.runtime_us.mean;
         let cal_error = (t_cal - t_truth).abs();
 
-        assert!(cal_error < initial_error, "Calibration should reduce prediction error. Initial: {}, Calibrated: {}", initial_error, cal_error);
+        assert!(
+            cal_error < initial_error,
+            "Calibration should reduce prediction error. Initial: {}, Calibrated: {}",
+            initial_error,
+            cal_error
+        );
     }
 }

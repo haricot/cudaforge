@@ -85,6 +85,8 @@
 #[cfg(feature = "heuristics")]
 mod arch_metrics;
 mod builder;
+#[cfg(feature = "heuristics")]
+mod calibration;
 #[cfg(feature = "capabilities")]
 mod capabilities;
 mod compute_cap;
@@ -94,8 +96,6 @@ mod hash;
 mod parallel;
 mod source;
 mod toolkit;
-#[cfg(feature = "heuristics")]
-mod calibration;
 
 // Re-export main types
 #[cfg(feature = "heuristics")]
@@ -115,33 +115,33 @@ pub mod telemetry;
 #[cfg(feature = "capabilities")]
 pub use capabilities::{
     emit_check_cfgs, emit_detailed_feature_summary, emit_rustc_cfgs, emit_toolkit_cfgs,
-    evaluate_hw_capabilities, evaluate_toolkit_capabilities,
-    get_capabilities_results, get_toolkit_capabilities_results, print_summary_once, Capability,
-    ToolkitCapability, CAPABILITIES, TOOLKIT_CAPABILITIES,
+    evaluate_hw_capabilities, evaluate_toolkit_capabilities, get_capabilities_results,
+    get_toolkit_capabilities_results, print_summary_once, Capability, ToolkitCapability,
+    CAPABILITIES, TOOLKIT_CAPABILITIES,
 };
 
+#[cfg(feature = "heuristics")]
+pub use capabilities::write_heuristics_rs;
 #[cfg(feature = "heuristics")]
 pub use capabilities::{
     evaluate_library_capabilities, LibraryCapability, TargetLibrary, LIBRARY_CAPABILITIES,
 };
-#[cfg(feature = "heuristics")]
-pub use predictor::{
-    Affinity, AnalyticalModel, CalibrationState, DType, HardwarePredictor, InferredState,
-    KernelPrediction, PredictorPrior, ProbabilisticHardwareOracle, ProbabilisticModel,
-    PressureRisk, ProblemShape, TuningContext, WorkloadDesc,
-};
-#[cfg(feature = "heuristics")]
-pub use capabilities::write_heuristics_rs;
 pub use compute_cap::{detect_compute_cap, get_gpu_arch_string, ComputeCapability, GpuArch};
 pub use dependency::{resolve_cutlass_from_cargo_checkouts, DependencyManager, ExternalDependency};
 pub use error::{Error, Result};
 pub use hash::BuildCache;
 pub use parallel::ParallelConfig;
+#[cfg(feature = "heuristics")]
+pub use predictor::{
+    Affinity, AnalyticalModel, CalibrationState, DType, HardwarePredictor, InferredState,
+    KernelPrediction, PredictorPrior, PressureRisk, ProbabilisticHardwareOracle,
+    ProbabilisticModel, ProblemShape, TuningContext, WorkloadDesc,
+};
 pub use source::{collect_headers, SourceSelector};
 pub use toolkit::{CudaToolkit, CudaVersion};
 
 #[cfg(feature = "heuristics")]
-pub use calibration::{CalibrationEngine, CalibrationProbe, BandwidthProbe, ComputeProbe};
+pub use calibration::{BandwidthProbe, CalibrationEngine, CalibrationProbe, ComputeProbe};
 
 /// Convenience alias for the main builder type
 pub type Builder = KernelBuilder;

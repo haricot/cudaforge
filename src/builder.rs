@@ -190,12 +190,11 @@ impl KernelBuilder {
     #[cfg(feature = "capabilities")]
     pub fn print_capabilities_once(self) -> Self {
         if let Ok(arch) = self.compute_cap.get_default() {
-            let tk = self.toolkit.clone()
-                .or_else(|| CudaToolkit::detect().ok());
-            
+            let tk = self.toolkit.clone().or_else(|| CudaToolkit::detect().ok());
+
             let toolkit_version = tk.as_ref().and_then(|t| t.parsed_version.as_ref());
             let cudnn_version = tk.as_ref().and_then(|t| t.cudnn_version.as_ref());
-            
+
             crate::capabilities::print_summary_once(&arch, toolkit_version, cudnn_version);
         }
         self

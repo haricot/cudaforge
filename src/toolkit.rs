@@ -36,7 +36,11 @@ pub struct CudnnVersion {
 
 impl CudnnVersion {
     pub fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 
     pub fn at_least(&self, major: u32, minor: u32) -> bool {
@@ -341,22 +345,28 @@ fn detect_cudnn_version(cuda_include: &PathBuf) -> Option<CudnnVersion> {
     search_paths.push(PathBuf::from("/usr/include/x86_64-linux-gnu"));
 
     for path in search_paths {
-        if !path.exists() { 
-            continue; 
+        if !path.exists() {
+            continue;
         }
-        
+
         // Prefer cudnn_version.h (v8+), fallback to cudnn.h
         let v_h = path.join("cudnn_version.h");
         let h = path.join("cudnn.h");
-        
-        let target = if v_h.exists() { Some(v_h) } else if h.exists() { Some(h) } else { None };
-        
+
+        let target = if v_h.exists() {
+            Some(v_h)
+        } else if h.exists() {
+            Some(h)
+        } else {
+            None
+        };
+
         if let Some(header) = target {
             if let Ok(content) = std::fs::read_to_string(&header) {
                 let major = extract_define(&content, "CUDNN_MAJOR");
                 let minor = extract_define(&content, "CUDNN_MINOR");
                 let patch = extract_define(&content, "CUDNN_PATCHLEVEL");
-                
+
                 if let (Some(maj), Some(min), Some(pat)) = (major, minor, patch) {
                     return Some(CudnnVersion::new(maj, min, pat));
                 }
@@ -381,7 +391,9 @@ fn extract_define(content: &str, name: &str) -> Option<u32> {
 // I'll use simple string matching.
 
 fn re_define(name: &str) -> SimpleDefineMatcher {
-    SimpleDefineMatcher { name: name.to_string() }
+    SimpleDefineMatcher {
+        name: name.to_string(),
+    }
 }
 
 struct SimpleDefineMatcher {
@@ -391,7 +403,9 @@ struct SimpleDefineMatcher {
 impl SimpleDefineMatcher {
     fn captures<'a>(&self, line: &'a str) -> Option<SimpleCaps<'a>> {
         let line = line.trim();
-        if !line.starts_with("#define") { return None; }
+        if !line.starts_with("#define") {
+            return None;
+        }
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 3 && parts[1] == self.name {
             return Some(SimpleCaps { val: parts[2] });
@@ -404,8 +418,7 @@ struct SimpleCaps<'a> {
     val: &'a str,
 }
 
-impl<'a> SimpleCaps<'a> {
-}
+impl<'a> SimpleCaps<'a> {}
 
 #[cfg(test)]
 mod tests {
