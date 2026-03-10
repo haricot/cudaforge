@@ -22,6 +22,8 @@ pub struct ExternalDependency {
     pub commit: String,
     /// Include paths within the repo (relative to repo root)
     pub include_paths: Vec<String>,
+    /// Additional sparse-checkout paths to fetch alongside includes.
+    pub extra_paths: Vec<String>,
     /// Whether to allow git submodule recursion (false adds --no-recurse-submodules)
     pub recurse_submodules: bool,
 }
@@ -37,6 +39,7 @@ impl ExternalDependency {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            extra_paths: Vec::new(),
             recurse_submodules: true,
         }
     }
@@ -48,6 +51,7 @@ impl ExternalDependency {
         repo_url: &str,
         commit: &str,
         include_paths: Vec<&str>,
+        extra_paths: Vec<&str>,
         recurse_submodules: bool,
     ) -> Self {
         Self {
@@ -55,8 +59,22 @@ impl ExternalDependency {
             repo_url: repo_url.to_string(),
             commit: commit.to_string(),
             include_paths: include_paths.iter().map(|s| s.to_string()).collect(),
+            extra_paths: extra_paths.iter().map(|s| s.to_string()).collect(),
             recurse_submodules,
         }
+    }
+
+    fn sparse_paths(&self) -> Vec<&str> {
+        let mut paths = Vec::with_capacity(self.include_paths.len() + self.extra_paths.len());
+        for path in &self.include_paths {
+            paths.push(path.as_str());
+        }
+        for path in &self.extra_paths {
+            if !self.include_paths.iter().any(|p| p == path) {
+                paths.push(path.as_str());
+            }
+        }
+        paths
     }
 
     /// Fetch the dependency to a global cache directory
@@ -189,7 +207,7 @@ impl ExternalDependency {
     fn setup_sparse_checkout(&self, dir: &PathBuf) -> Result<()> {
         // Set sparse checkout paths
         let mut args = vec!["sparse-checkout", "set"];
-        for path in &self.include_paths {
+        for path in self.sparse_paths() {
             args.push(path);
         }
 
@@ -316,6 +334,7 @@ impl DependencyManager {
         repo: &str,
         commit: &str,
         include_paths: Vec<&str>,
+        extra_paths: Vec<&str>,
         recurse_submodules: bool,
     ) -> Self {
         self.dependencies.push(ExternalDependency::git(
@@ -323,6 +342,7 @@ impl DependencyManager {
             repo,
             commit,
             include_paths,
+            extra_paths,
             recurse_submodules,
         ));
         self
@@ -352,6 +372,16 @@ impl DependencyManager {
         }
 
         Ok(include_args)
+    }
+
+    /// Fetch a specific dependency and return its checkout root.
+    pub fn fetch_dependency(&self, name: &str, out_dir: &PathBuf) -> Result<PathBuf> {
+        let dep = self
+            .dependencies
+            .iter()
+            .find(|d| d.name == name)
+            .ok_or_else(|| Error::GitOperationFailed(format!("Unknown dependency: {name}")))?;
+        dep.fetch(out_dir)
     }
 
     /// Check if CUTLASS is enabled

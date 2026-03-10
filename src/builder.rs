@@ -193,6 +193,7 @@ impl KernelBuilder {
         repo: &str,
         commit: &str,
         include_paths: Vec<&str>,
+        extra_paths: Vec<&str>,
         recurse_submodules: bool,
     ) -> Self {
         self.dependencies = self.dependencies.with_git_dependency(
@@ -200,9 +201,15 @@ impl KernelBuilder {
             repo,
             commit,
             include_paths,
+            extra_paths,
             recurse_submodules,
         );
         self
+    }
+
+    /// Fetch a configured git dependency and return its checkout root.
+    pub fn fetch_git_dependency(&self, name: &str) -> Result<PathBuf> {
+        self.dependencies.fetch_dependency(name, &self.out_dir)
     }
 
     /// Add a local include path

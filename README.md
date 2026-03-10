@@ -181,9 +181,32 @@ KernelBuilder::new()
         "https://github.com/org/my_lib.git",   // Repository
         "abc123def456",                        // Commit hash
         vec!["include", "src/include"],        // Include paths
+        vec!["src/kernels", "third_party"],    // Extra sparse-checkout paths
         false,                                 // Do not recurse submodules
     )
     .build_lib("libkernels.a")?;
+```
+
+`include_paths` are added to nvcc as `-I...` include directories.
+
+`extra_paths` are fetched into the sparse checkout but are not added as include directories automatically. Use them when your build needs additional source trees, generated files, templates, or other repo content beyond headers.
+
+If you need to compile source files from the fetched dependency, you can fetch the checkout root and reference files from there:
+
+```rust
+let builder = KernelBuilder::new()
+    .source_dir("src")
+    .with_git_dependency(
+        "my_lib",
+        "https://github.com/org/my_lib.git",
+        "abc123def456",
+        vec!["include"],
+        vec!["src/kernels"],
+        false,
+    );
+
+let my_lib_root = builder.fetch_git_dependency("my_lib")?;
+let builder = builder.source_files(vec![my_lib_root.join("src/kernels/my_kernel.cu")]);
 ```
 
 ### Local Include Paths
