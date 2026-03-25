@@ -3,7 +3,7 @@
 use crate::error::{Error, Result};
 use fs2::FileExt;
 use std::fs::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Well-known CUTLASS repository configuration
@@ -84,7 +84,7 @@ impl ExternalDependency {
     /// to avoid re-cloning on subsequent builds.
     ///
     /// Uses file locking to prevent concurrent builds from conflicting.
-    pub fn fetch(&self, out_dir: &PathBuf) -> Result<PathBuf> {
+    pub fn fetch(&self, out_dir: &Path) -> Result<PathBuf> {
         // Use global cache directory, with out_dir as fallback
         let cache_dir = cudaforge_git_cache_dir(out_dir)?;
 
@@ -149,7 +149,7 @@ impl ExternalDependency {
     }
 
     /// Get include path arguments for nvcc
-    pub fn include_args(&self, base_dir: &PathBuf) -> Vec<String> {
+    pub fn include_args(&self, base_dir: &Path) -> Vec<String> {
         let mut args = Vec::new();
 
         // Add root directory
@@ -176,7 +176,7 @@ impl ExternalDependency {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    fn clone_repo(&self, target_dir: &PathBuf) -> Result<()> {
+    fn clone_repo(&self, target_dir: &Path) -> Result<()> {
         println!("cargo:warning=Cloning {} from {}", self.name, self.repo_url);
 
         let target_dir_str = target_dir
@@ -277,7 +277,7 @@ impl ExternalDependency {
     /// This can happen when:
     /// - A previous git operation was interrupted
     /// - Multiple parallel builds try to access the same cached repo
-    fn cleanup_git_locks(&self, dir: &PathBuf) {
+    fn cleanup_git_locks(&self, dir: &Path) {
         let git_dir = dir.join(".git");
         let lock_files = [
             git_dir.join("index.lock"),
@@ -355,7 +355,7 @@ impl DependencyManager {
     }
 
     /// Fetch all dependencies and return include arguments
-    pub fn fetch_all(&self, out_dir: &PathBuf) -> Result<Vec<String>> {
+    pub fn fetch_all(&self, out_dir: &Path) -> Result<Vec<String>> {
         let mut include_args = Vec::new();
 
         // Add local includes first
@@ -375,7 +375,7 @@ impl DependencyManager {
     }
 
     /// Fetch a specific dependency and return its checkout root.
-    pub fn fetch_dependency(&self, name: &str, out_dir: &PathBuf) -> Result<PathBuf> {
+    pub fn fetch_dependency(&self, name: &str, out_dir: &Path) -> Result<PathBuf> {
         let dep = self
             .dependencies
             .iter()
@@ -443,7 +443,7 @@ pub fn resolve_cutlass_from_cargo_checkouts() -> Option<PathBuf> {
 /// 3. `~/.cargo/git/checkouts/` as fallback (reuses Cargo's cache)
 ///
 /// Creates the directory if it doesn't exist.
-fn cudaforge_git_cache_dir(fallback_dir: &PathBuf) -> Result<PathBuf> {
+fn cudaforge_git_cache_dir(fallback_dir: &Path) -> Result<PathBuf> {
     let cache_dir = if let Ok(cudaforge_home) = std::env::var("CUDAFORGE_HOME") {
         PathBuf::from(cudaforge_home).join("git").join("checkouts")
     } else if let Ok(home) = std::env::var("HOME") {

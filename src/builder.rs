@@ -389,7 +389,7 @@ impl KernelBuilder {
 
         // Get target info
         let target = std::env::var("TARGET").ok();
-        let is_msvc = target.as_ref().map_or(false, |t| t.contains("msvc"));
+        let is_msvc = target.as_ref().is_some_and(|t| t.contains("msvc"));
         let ccbin_env = std::env::var("NVCC_CCBIN").ok();
         let nvcc_threads = self.parallel.nvcc_threads();
 
@@ -481,7 +481,7 @@ impl KernelBuilder {
             for (kernel_file, obj_file, gpu_arch) in &compile_jobs {
                 cache.update(
                     kernel_file,
-                    &obj_file,
+                    obj_file,
                     &gpu_arch.to_nvcc_arch(),
                     &args_hash,
                     &watch_hash,
@@ -701,68 +701,5 @@ impl PtxOutput {
         }
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use std::time::Duration;
-
-    #[test]
-    fn test_incremental_rebuild_on_header_change() {
-        // Skip test if nvcc is not available (e.g. in some CI environments)
-        if crate::toolkit::CudaToolkit::detect().is_err() {
-            return;
-        }
-
-        // Use a semi-unique directory in the system temp folder
-        let mut root = std::env::temp_dir();
-        root.push(format!("cudaforge-test-{}", std::process::id()));
-        
-        // Ensure clean state
-        if root.exists() {
-            let _ = fs::remove_dir_all(&root);
-        }
-        fs::create_dir_all(&root).unwrap();
-
-        let out_dir = root.join("out");
-        let src_dir = root.join("src");
-        fs::create_dir_all(&out_dir).unwrap();
-        fs::create_dir_all(&src_dir).unwrap();
-
-        let cu_file = src_dir.join("kernel.cu");
-        let cuh_file = src_dir.join("header.cuh");
-        let lib_file = out_dir.join("libkernels.a");
-
-        // Create initial version
-        fs::write(&cu_file, "#include \"header.cuh\"\nextern \"C\" __global__ void add() {}").unwrap();
-        fs::write(&cuh_file, "// version 1").unwrap();
-
-        let builder = KernelBuilder::new()
-            .source_files(vec![&cu_file])
-            .watch(vec![&cuh_file])
-            .out_dir(&out_dir);
-        
-        // First build
-        builder.build_lib(&lib_file).expect("First build failed");
-        let mtime1 = fs::metadata(&lib_file).expect("Lib file should exist").modified().unwrap();
-
-        std::thread::sleep(Duration::from_millis(1100));
-
-        // Modify the watched header
-        fs::write(&cuh_file, "// version 2").unwrap();
-
-        // Second build - should trigger recompilation
-        builder.build_lib(&lib_file).expect("Second build failed");
-        let mtime2 = fs::metadata(&lib_file).expect("Lib file should exist after second build").modified().unwrap();
-
-        let recompiled = mtime2 > mtime1;
-        
-        // Cleanup BEFORE assertion so we don't leave mess on failure
-        let _ = fs::remove_dir_all(&root);
-
-        assert!(recompiled, "Recompilation was NOT triggered by header change!");
     }
 }

@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use walkdir;
+// redundant walkdir import removed
 
 const CACHE_FILENAME: &str = ".cudaforge_cache.json";
 
@@ -99,7 +99,10 @@ impl BuildCache {
         };
 
         // Check if gpu arch, args, or watched paths changed
-        if entry.gpu_arch != gpu_arch || entry.args_hash != args_hash || entry.watch_hash != watch_hash {
+        if entry.gpu_arch != gpu_arch
+            || entry.args_hash != args_hash
+            || entry.watch_hash != watch_hash
+        {
             return true;
         }
 
@@ -195,7 +198,7 @@ pub fn hash_args(args: &[String]) -> String {
 /// Compute a combined hash of multiple paths (files or directories)
 pub fn hash_paths(paths: &[PathBuf]) -> String {
     let mut hasher = Sha256::new();
-    
+
     // Sort paths to ensure deterministic hashing
     let mut sorted_paths = paths.to_vec();
     sorted_paths.sort();
@@ -215,10 +218,14 @@ pub fn hash_paths(paths: &[PathBuf]) -> String {
                 .filter_map(|e| e.ok())
                 .filter(|e| {
                     let p = e.path();
-                    p.is_file() && matches!(p.extension().and_then(|s| s.to_str()), Some("h" | "cuh" | "hpp"))
+                    p.is_file()
+                        && matches!(
+                            p.extension().and_then(|s| s.to_str()),
+                            Some("h" | "cuh" | "hpp")
+                        )
                 })
                 .collect();
-            
+
             entries.sort_by(|a, b| a.path().cmp(b.path()));
 
             for entry in entries {
@@ -231,7 +238,7 @@ pub fn hash_paths(paths: &[PathBuf]) -> String {
             }
         }
     }
-    
+
     format!("{:x}", hasher.finalize())
 }
 
