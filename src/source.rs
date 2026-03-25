@@ -140,7 +140,10 @@ impl SourceSelector {
     fn collect_from_directory(&self, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
         for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
             let path = entry.path();
-            if path.is_file() && path.extension().is_some_and(|e| e == "cu") && !self.is_excluded(path) {
+            if path.is_file()
+                && path.extension().is_some_and(|e| e == "cu")
+                && !self.is_excluded(path)
+            {
                 files.push(path.to_path_buf());
             }
         }

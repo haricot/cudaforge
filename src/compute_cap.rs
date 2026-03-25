@@ -51,11 +51,7 @@ impl GpuArch {
         })?;
 
         // Normalize (accept both 80 and 8.0 style)
-        let base = if base < 20 {
-            base * 10
-        } else {
-            base
-        };
+        let base = if base < 20 { base * 10 } else { base };
 
         // If explicit suffix provided, use it; otherwise auto-suffix for >=90
         if explicit_suffix.is_some() {
