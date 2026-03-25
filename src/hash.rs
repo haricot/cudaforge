@@ -8,6 +8,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use walkdir;
 
 const CACHE_FILENAME: &str = ".cudaforge_cache.json";
 
@@ -25,6 +26,9 @@ pub struct BuildCache {
 pub struct CacheEntry {
     /// SHA-256 hash of file content
     pub content_hash: String,
+    /// Combined hash of watched paths
+    #[serde(default)]
+    pub watch_hash: String,
     /// Last modification time (Unix timestamp)
     pub modified_time: u64,
     /// Path to compiled object file
@@ -79,6 +83,7 @@ impl BuildCache {
         object_path: &Path,
         gpu_arch: &str,
         args_hash: &str,
+        watch_hash: &str,
     ) -> bool {
         let key = source_path.to_string_lossy().to_string();
 
@@ -93,8 +98,8 @@ impl BuildCache {
             None => return true,
         };
 
-        // Check if gpu arch or args changed
-        if entry.gpu_arch != gpu_arch || entry.args_hash != args_hash {
+        // Check if gpu arch, args, or watched paths changed
+        if entry.gpu_arch != gpu_arch || entry.args_hash != args_hash || entry.watch_hash != watch_hash {
             return true;
         }
 
@@ -122,6 +127,7 @@ impl BuildCache {
         object_path: &Path,
         gpu_arch: &str,
         args_hash: &str,
+        watch_hash: &str,
     ) -> Result<()> {
         let key = source_path.to_string_lossy().to_string();
         let content_hash = hash_file(source_path)?;
@@ -140,6 +146,7 @@ impl BuildCache {
             key,
             CacheEntry {
                 content_hash,
+                watch_hash: watch_hash.to_string(),
                 modified_time,
                 object_path: object_path.to_string_lossy().to_string(),
                 gpu_arch: gpu_arch.to_string(),
@@ -182,6 +189,49 @@ pub fn hash_args(args: &[String]) -> String {
         hasher.update(arg.as_bytes());
         hasher.update(b"\0");
     }
+    format!("{:x}", hasher.finalize())
+}
+
+/// Compute a combined hash of multiple paths (files or directories)
+pub fn hash_paths(paths: &[PathBuf]) -> String {
+    let mut hasher = Sha256::new();
+    
+    // Sort paths to ensure deterministic hashing
+    let mut sorted_paths = paths.to_vec();
+    sorted_paths.sort();
+
+    for path in sorted_paths {
+        if path.is_file() {
+            if let Ok(h) = hash_file(&path) {
+                hasher.update(path.to_string_lossy().as_bytes());
+                hasher.update(b":");
+                hasher.update(h.as_bytes());
+                hasher.update(b"\0");
+            }
+        } else if path.is_dir() {
+            // For directories, we hash all .h and .cuh files recursively
+            let mut entries: Vec<_> = walkdir::WalkDir::new(&path)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    let p = e.path();
+                    p.is_file() && matches!(p.extension().and_then(|s| s.to_str()), Some("h" | "cuh" | "hpp"))
+                })
+                .collect();
+            
+            entries.sort_by(|a, b| a.path().cmp(b.path()));
+
+            for entry in entries {
+                if let Ok(h) = hash_file(entry.path()) {
+                    hasher.update(entry.path().to_string_lossy().as_bytes());
+                    hasher.update(b":");
+                    hasher.update(h.as_bytes());
+                    hasher.update(b"\0");
+                }
+            }
+        }
+    }
+    
     format!("{:x}", hasher.finalize())
 }
 
