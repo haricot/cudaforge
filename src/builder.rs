@@ -377,7 +377,7 @@ impl KernelBuilder {
         }
 
         if compile_jobs.is_empty() && out_file.exists() {
-            println!("cargo:warning=All kernels up-to-date, skipping compilation");
+            println!("cargo:warning=All library kernels up-to-date, skipping compilation");
             return Ok(());
         }
 
@@ -550,32 +550,51 @@ impl KernelBuilder {
         let mut cache = BuildCache::load(&self.out_dir);
         let args_hash = hash_args(&self.extra_args);
 
-        kernel_files
-            .par_iter()
-            .try_for_each(|kernel_file| -> Result<()> {
-                let filename = kernel_file
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
-                let gpu_arch = self.compute_cap.get_for_file(filename)?;
+        let mut compile_jobs = Vec::new();
+        for kernel_file in &kernel_files {
+            let filename = kernel_file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            let gpu_arch = self.compute_cap.get_for_file(filename)?;
 
-                let output_file = self
-                    .out_dir
-                    .join(kernel_file.with_extension("ptx").file_name().unwrap());
+            let output_file = self
+                .out_dir
+                .join(kernel_file.with_extension("ptx").file_name().unwrap());
 
-                // Check if output is current using BuildCache
-                if self.incremental
-                    && !cache.needs_rebuild(
-                        kernel_file,
-                        &output_file,
-                        &gpu_arch.to_nvcc_arch(),
-                        &args_hash,
-                        &watch_hash,
-                    )
-                {
-                    return Ok(());
-                }
+            // Check if output is current using BuildCache
+            if self.incremental
+                && !cache.needs_rebuild(
+                    kernel_file,
+                    &output_file,
+                    &gpu_arch.to_nvcc_arch(),
+                    &args_hash,
+                    &watch_hash,
+                )
+            {
+                continue;
+            }
 
+            compile_jobs.push((kernel_file, output_file, gpu_arch));
+        }
+
+        if compile_jobs.is_empty() {
+            println!("cargo:warning=All PTX kernels up-to-date, skipping compilation");
+            return Ok(PtxOutput {
+                paths: kernel_files,
+                out_dir: self.out_dir.clone(),
+            });
+        }
+
+        println!(
+            "cargo:warning=Compiling {} of {} PTX kernels",
+            compile_jobs.len(),
+            kernel_files.len()
+        );
+
+        // Compile in parallel
+        compile_jobs.par_iter().try_for_each(
+            |(kernel_file, _output_file, gpu_arch)| -> Result<()> {
                 let gencode_arg = gpu_arch.to_gencode_arg();
 
                 let mut command = Command::new(&toolkit.nvcc_path);
@@ -612,13 +631,13 @@ impl KernelBuilder {
                     .map_err(|e| Error::NvccNotFound(format!("Failed to spawn nvcc: {}", e)))?
                     .wait_with_output()
                     .map_err(|e| Error::CompilationFailed {
-                        path: kernel_file.clone(),
+                        path: kernel_file.to_path_buf(),
                         message: e.to_string(),
                     })?;
 
                 if !output.status.success() {
                     return Err(Error::CompilationFailed {
-                        path: kernel_file.clone(),
+                        path: kernel_file.to_path_buf(),
                         message: format!(
                             "nvcc error:\n{}\n{}",
                             String::from_utf8_lossy(&output.stdout),
@@ -628,7 +647,8 @@ impl KernelBuilder {
                 }
 
                 Ok(())
-            })?;
+            },
+        )?;
 
         // Update cache for PTX files
         if self.incremental {
@@ -701,5 +721,81 @@ impl PtxOutput {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::Duration;
+
+    #[test]
+    fn test_incremental_rebuild_on_header_change() {
+        // Skip test if nvcc is not available (e.g. in some CI environments)
+        if crate::toolkit::CudaToolkit::detect().is_err() {
+            return;
+        }
+
+        // Use a semi-unique directory in the system temp folder
+        let mut root = std::env::temp_dir();
+        root.push(format!("cudaforge-test-{}", std::process::id()));
+
+        // Ensure clean state
+        if root.exists() {
+            let _ = fs::remove_dir_all(&root);
+        }
+        fs::create_dir_all(&root).unwrap();
+
+        let out_dir = root.join("out");
+        let src_dir = root.join("src");
+        fs::create_dir_all(&out_dir).unwrap();
+        fs::create_dir_all(&src_dir).unwrap();
+
+        let cu_file = src_dir.join("kernel.cu");
+        let cuh_file = src_dir.join("header.cuh");
+        let lib_file = out_dir.join("libkernels.a");
+
+        // Create initial version
+        fs::write(
+            &cu_file,
+            "#include \"header.cuh\"\nextern \"C\" __global__ void add() {}",
+        )
+        .unwrap();
+        fs::write(&cuh_file, "// version 1").unwrap();
+
+        let builder = KernelBuilder::new()
+            .source_files(vec![&cu_file])
+            .watch(vec![&cuh_file])
+            .out_dir(&out_dir);
+
+        // First build
+        builder.build_lib(&lib_file).expect("First build failed");
+        let mtime1 = fs::metadata(&lib_file)
+            .expect("Lib file should exist")
+            .modified()
+            .unwrap();
+
+        std::thread::sleep(Duration::from_millis(1100));
+
+        // Modify the watched header
+        fs::write(&cuh_file, "// version 2").unwrap();
+
+        // Second build - should trigger recompilation
+        builder.build_lib(&lib_file).expect("Second build failed");
+        let mtime2 = fs::metadata(&lib_file)
+            .expect("Lib file should exist after second build")
+            .modified()
+            .unwrap();
+
+        let recompiled = mtime2 > mtime1;
+
+        // Cleanup BEFORE assertion so we don't leave mess on failure
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(
+            recompiled,
+            "Recompilation was NOT triggered by header change!"
+        );
     }
 }

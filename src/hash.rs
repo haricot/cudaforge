@@ -85,7 +85,7 @@ impl BuildCache {
         args_hash: &str,
         watch_hash: &str,
     ) -> bool {
-        let key = source_path.to_string_lossy().to_string();
+        let key = format!("{}:{}", source_path.display(), object_path.display());
 
         // Check if object file exists
         if !object_path.exists() {
@@ -132,7 +132,7 @@ impl BuildCache {
         args_hash: &str,
         watch_hash: &str,
     ) -> Result<()> {
-        let key = source_path.to_string_lossy().to_string();
+        let key = format!("{}:{}", source_path.display(), object_path.display());
         let content_hash = hash_file(source_path)?;
 
         let modified_time = source_path
