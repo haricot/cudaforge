@@ -3,8 +3,12 @@
 use crate::error::{Error, Result};
 use fs2::FileExt;
 use std::fs::File;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+const ANSI_RED_BOLD: &str = "\x1b[1;31m";
+const ANSI_RESET: &str = "\x1b[0m";
 
 /// Well-known CUTLASS repository configuration
 const CUTLASS_REPO: &str = "https://github.com/NVIDIA/cutlass.git";
@@ -171,7 +175,7 @@ impl ExternalDependency {
             .args(["rev-parse", "HEAD"])
             .current_dir(dir)
             .output()
-            .map_err(|e| Error::GitOperationFailed(format!("git rev-parse failed: {}", e)))?;
+            .map_err(|e| git_command_error("rev-parse", e))?;
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
@@ -192,7 +196,7 @@ impl ExternalDependency {
             .arg(&self.repo_url)
             .arg(target_dir_str)
             .status()
-            .map_err(|e| Error::GitOperationFailed(format!("git clone failed: {}", e)))?;
+            .map_err(|e| git_command_error("clone", e))?;
 
         if !status.success() {
             return Err(Error::GitOperationFailed(format!(
@@ -215,7 +219,7 @@ impl ExternalDependency {
             .args(&args)
             .current_dir(dir)
             .status()
-            .map_err(|e| Error::GitOperationFailed(format!("git sparse-checkout failed: {}", e)))?;
+            .map_err(|e| git_command_error("sparse-checkout", e))?;
 
         if !status.success() {
             return Err(Error::GitOperationFailed(format!(
@@ -246,7 +250,7 @@ impl ExternalDependency {
             .args(["origin", &self.commit])
             .current_dir(dir)
             .status()
-            .map_err(|e| Error::GitOperationFailed(format!("git fetch failed: {}", e)))?;
+            .map_err(|e| git_command_error("fetch", e))?;
 
         if !status.success() {
             return Err(Error::GitOperationFailed(format!(
@@ -260,7 +264,7 @@ impl ExternalDependency {
             .args(["checkout", &self.commit])
             .current_dir(dir)
             .status()
-            .map_err(|e| Error::GitOperationFailed(format!("git checkout failed: {}", e)))?;
+            .map_err(|e| git_command_error("checkout", e))?;
 
         if !status.success() {
             return Err(Error::GitOperationFailed(format!(
@@ -486,4 +490,17 @@ fn cargo_git_checkouts_dir() -> Result<PathBuf> {
     Err(Error::InvalidConfig(
         "Neither CARGO_HOME nor HOME is set".to_string(),
     ))
+}
+
+fn git_command_error(operation: &str, err: io::Error) -> Error {
+    let mut message = format!("git {operation} failed: {err}");
+
+    if err.kind() == io::ErrorKind::NotFound {
+        let install_hint = format!("{ANSI_RED_BOLD}Please install git and retry.{ANSI_RESET}");
+        message = format!(
+            "git {operation} failed: git executable not found in PATH. {install_hint} Original error: {err}"
+        );
+    }
+
+    Error::GitOperationFailed(message)
 }
