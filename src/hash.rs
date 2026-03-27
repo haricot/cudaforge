@@ -162,10 +162,19 @@ impl BuildCache {
 
     /// Remove stale entries (files that no longer exist)
     pub fn cleanup(&mut self) {
-        self.entries.retain(|path, entry| {
-            Path::new(path).exists() && Path::new(&entry.object_path).exists()
+        self.entries.retain(|key, entry| {
+            let source_exists = source_path_from_key(key, &entry.object_path)
+                .map(Path::new)
+                .is_some_and(Path::exists);
+
+            source_exists && Path::new(&entry.object_path).exists()
         });
     }
+}
+
+fn source_path_from_key<'a>(key: &'a str, object_path: &str) -> Option<&'a str> {
+    let suffix = format!(":{}", object_path);
+    key.strip_suffix(&suffix)
 }
 
 /// Compute SHA-256 hash of a file's contents
@@ -267,6 +276,7 @@ pub fn output_is_current(output: &Path, inputs: &[PathBuf]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_hash_args() {
@@ -276,5 +286,46 @@ mod tests {
 
         assert_eq!(hash_args(&args1), hash_args(&args2));
         assert_ne!(hash_args(&args1), hash_args(&args3));
+    }
+
+    #[test]
+    fn test_cleanup_retains_valid_composite_key_entries() {
+        let mut root = std::env::temp_dir();
+        root.push(format!("cudaforge-hash-test-{}", std::process::id()));
+
+        if root.exists() {
+            let _ = fs::remove_dir_all(&root);
+        }
+        fs::create_dir_all(&root).unwrap();
+
+        let source_path = root.join("kernel.cu");
+        let object_path = root.join("kernel.o");
+        fs::write(&source_path, "__global__ void kernel() {}").unwrap();
+        fs::write(&object_path, "object").unwrap();
+
+        let mut cache = BuildCache::default();
+        cache
+            .update(&source_path, &object_path, "sm_80", "args", "watch")
+            .unwrap();
+
+        cache.cleanup();
+        assert_eq!(cache.entries.len(), 1);
+
+        fs::remove_file(&source_path).unwrap();
+        cache.cleanup();
+        assert!(cache.entries.is_empty());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_source_path_from_key_with_colons_in_paths() {
+        let key = "/tmp/src:dir/kernel.cu:/tmp/out:dir/kernel.o";
+        let object_path = "/tmp/out:dir/kernel.o";
+
+        assert_eq!(
+            source_path_from_key(key, object_path),
+            Some("/tmp/src:dir/kernel.cu")
+        );
     }
 }

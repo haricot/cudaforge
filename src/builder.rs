@@ -548,7 +548,10 @@ impl KernelBuilder {
         let nvcc_threads = self.parallel.nvcc_threads();
         let watch_hash = hash_paths(self.sources.watch_paths());
         let mut cache = BuildCache::load(&self.out_dir);
-        let args_hash = hash_args(&self.extra_args);
+
+        let mut all_args = self.extra_args.clone();
+        all_args.extend(dep_args.clone());
+        let args_hash = hash_args(&all_args);
 
         let mut compile_jobs = Vec::new();
         for kernel_file in &kernel_files {
